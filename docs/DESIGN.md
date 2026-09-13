@@ -1481,13 +1481,22 @@ Ordered so that each step is verifiable when it lands.
 | 9 | Coroutines | `Task<T>`, awaiters, cancellation, `TaskScope` — core unchanged |
 | 10 | Simulation | `SimBackend` + `SimRuntime` + fault injection |
 | 11 | Breadth | UDP, async DNS, Unix sockets + fd passing, kqueue |
-| 12 | Operability | admin/introspection endpoint, `afx-flight`, `afx-load` |
+| 12 | Operability | admin/introspection endpoint, `afx-flight` cross-shard merge |
 | 13 | Optional | TLS, file I/O, zero-copy, `WorkerPool`, hot restart, shm IPC |
+
+Task-level breakdown, exit criteria per milestone, spike schedule and risk
+register: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). A milestone 0
+(project scaffolding, CI, hygiene scripts) precedes milestone 1 there, because
+ADR-0009's guarantee depends on the enforcement existing before the first
+header does.
 
 Sequencing notes:
 
 - Milestone 8 is late, but the io_uring **spike** happens during milestone 2
   (§26.2) — the spike informs the concept; the production backend comes later.
+- `afx-load` lands in milestone 8, not 12: milestone 8's purpose is a
+  defensible epoll-vs-io_uring comparison, which is only as trustworthy as the
+  load generator producing it.
 - The four seam-now additions land in milestones 1–8 deliberately: `Context`
   and the annotation macros in milestone 1 (they touch every signature written
   afterwards), `TimerGroup` with the wheel in milestone 4 (it fixes the node
@@ -1495,8 +1504,7 @@ Sequencing notes:
   sites), and `Timestamps` in the `Completion` struct from milestone 2 even
   though only the io_uring and timestamping work in milestone 8 fills it in.
 - Milestone 12 exists as its own step because operability tooling slips forever
-  when it is a subtask of something else, and `afx-load` is a prerequisite for
-  trusting milestone 8's numbers.
+  when it is a subtask of something else.
 
 ---
 

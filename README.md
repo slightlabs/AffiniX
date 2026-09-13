@@ -60,6 +60,9 @@ rt.join();
 - [docs/DESIGN.md](docs/DESIGN.md) — the full design: threading model,
   `EventManager`, backends, timers, ITC, framing, backpressure, affinity,
   observability, testing, roadmap
+- [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) — 14 milestones
+  with task-level breakdown, exit criteria, spike schedule, CI build-up,
+  benchmark methodology and risk register
 - [docs/adr/](docs/adr/README.md) — decision records, each with an explicit
   tripwire for revisiting it
 
