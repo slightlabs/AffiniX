@@ -24,11 +24,24 @@ int main() {
         std::atomic<std::uint64_t> seq{0};
 
         auto b = afx::bench::make_bench();
+        const auto spin_deadline = seconds(60);  // generous: a missed reply
+                                                 // means a lost wake — fail,
+                                                 // don't hang CI for 300s
         b.run("mailbox round-trip (post -> run -> reply)", [&] {
             std::uint64_t want = seq.fetch_add(1) + 1;
-            (void)em.post([&] { (void)reply.try_push(want); });
+            if (em.post([&] { (void)reply.try_push(want); }) !=
+                PostResult::Ok) {
+                std::fprintf(stderr, "itc_pingpong: post dropped\n");
+                std::abort();
+            }
             std::uint64_t v = 0;
-            while (!reply.try_pop(v) || v != want) {}  // spin-drain reply
+            auto t0 = steady_clock::now();
+            while (!reply.try_pop(v) || v != want) {  // spin-drain reply
+                if (steady_clock::now() - t0 > spin_deadline) {
+                    std::fprintf(stderr, "itc_pingpong: reply never arrived\n");
+                    std::abort();
+                }
+            }
         });
         em.stop();
         t.join();

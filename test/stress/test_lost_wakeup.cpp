@@ -48,6 +48,7 @@ TEST_CASE("stress: every post is delivered across block/spin transitions") {
         std::atomic<std::uint64_t> delivered{0};
         std::atomic<std::uint64_t> post_failures{0};
         std::atomic<bool> go{false};
+        std::atomic<bool> give_up{false};
 
         std::thread loop([&] { em.run(); });
 
@@ -57,17 +58,28 @@ TEST_CASE("stress: every post is delivered across block/spin transitions") {
                 while (!go.load(std::memory_order_acquire)) {}
                 std::mt19937 rng(0xBEEF + p);
                 for (int i = 0; i < kMsgs; ++i) {
+                    if (give_up.load(std::memory_order_acquire)) return;
                     // Occasionally pause around the spin budget so the
                     // consumer blocks; mostly burst.
                     if (rng() % 97 == 0)
                         std::this_thread::sleep_for(
                             std::chrono::microseconds(rng() % 400));
-                    // Bounded ring: Full is legitimate backpressure — retry.
+                    // Bounded ring: Full is legitimate backpressure — retry,
+                    // but bail if the consumer has clearly wedged so a lost
+                    // wake shows up as a test failure, not a job timeout.
                     PostResult r;
+                    auto retry_deadline = std::chrono::steady_clock::now() +
+                                          std::chrono::seconds(60);
                     do {
                         r = em.mailbox().post([&] {
                             delivered.fetch_add(1, std::memory_order_relaxed);
                         });
+                        if (r == PostResult::Full &&
+                            std::chrono::steady_clock::now() > retry_deadline) {
+                            post_failures.fetch_add(1,
+                                                    std::memory_order_relaxed);
+                            return;
+                        }
                     } while (r == PostResult::Full);
                     if (r != PostResult::Ok)
                         post_failures.fetch_add(1, std::memory_order_relaxed);
@@ -81,6 +93,7 @@ TEST_CASE("stress: every post is delivered across block/spin transitions") {
         while (delivered.load() < std::uint64_t(kProducers) * kMsgs &&
                std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_for(2ms);
+        give_up.store(true, std::memory_order_release);  // producers bail
 
         for (auto& t : producers) t.join();
         CHECK(post_failures.load() == 0);
