@@ -1,5 +1,6 @@
 build/
 build-*/
 _deps/
+site/
 compile_commands.json
 .cache/

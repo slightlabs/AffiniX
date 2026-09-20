@@ -35,8 +35,13 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
 
+      # -j: the suite is 140+ mostly-sub-second cases; serial ctest is the
+      # long pole. AFX_MODEL_SCALE trims per-seed model steps for the PR
+      # gate (nightly sweeps more seeds at full scale instead).
       - name: Test
-        run: ctest --preset ${{ matrix.preset }} --output-on-failure
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure -j"$(nproc)"
+        env:
+          AFX_MODEL_SCALE: "0.3"
 
   sanitizers:
     name: ${{ matrix.preset }}
@@ -56,7 +61,7 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
       - name: Test
-        run: ctest --preset ${{ matrix.preset }} --output-on-failure
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure -j"$(nproc)"
 
   clang-thread-safety:
     name: clang-tsa (-Wthread-safety)
@@ -101,6 +106,9 @@ jobs:
         run: cmake --preset gcc-debug
       - name: Build
         run: cmake --build --preset gcc-debug -j"$(nproc)"
+      - name: Smoke suite (parallel, model tests run wide below)
+        run: ctest --preset gcc-debug --output-on-failure -j"$(nproc)" \
+               -E "model:"
       - name: Long lost-wakeup stress (AFX_STRESS_SCALE=20)
         run: |
           AFX_STRESS_SCALE=20 ./build/gcc-debug/test/afx_stress_tests
@@ -116,26 +124,39 @@ jobs:
           AFX_MODEL_SEEDS="$(seq 100 50 1000 | paste -sd,)" \
             ./build/gcc-debug/test/afx_tests -tc="model:*"
 
-  format-and-tidy:
-    name: clang-format / clang-tidy
+  # Hard gate now that the repo-wide reformat has landed (was advisory,
+  # per IMPLEMENTATION_PLAN.md's CI-stages table). Pin the version so CI
+  # matches the style the tree was formatted with (LLVM 18).
+  format:
+    name: clang-format
     runs-on: ubuntu-24.04
-    # Style/lint is advisory until a one-time repo-wide reformat commit lands
-    # (CONTRIBUTING.md) — flip this to a hard failure once that's done, per
-    # IMPLEMENTATION_PLAN.md's CI-stages table (M0).
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+      - name: clang-format --dry-run
+        run: |
+          find include src test examples bench \
+            \( -name '*.hpp' -o -name '*.cpp' \) \
+            | xargs clang-format-18 --dry-run --Werror
+
+  # clang-tidy stays advisory: it reports diagnostics on existing code that
+  # haven't been triaged yet. Tracked as a follow-up like -Werror.
+  tidy:
+    name: clang-tidy (advisory)
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format clang-tidy ninja-build clang
-      - name: clang-format --dry-run
-        run: |
-          find include src test examples -name '*.hpp' -o -name '*.cpp' \
-            | xargs clang-format --dry-run --Werror
+          sudo apt-get install -y clang-tidy ninja-build clang
       - name: Configure (for compile_commands.json)
         run: cmake --preset clang-debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
       - name: clang-tidy
         run: |
-          find include src -name '*.cpp' \
+          find src \( -name '*.cpp' \) \
             | xargs -I{} clang-tidy -p build/clang-debug {}

@@ -1,0 +1,96 @@
+name: Release
+
+# Pushing a semver tag (v*) verifies the tree, publishes a GitHub Release
+# with generated notes plus a headers+static-lib tarball, and rebuilds the
+# docs site on GitHub Pages.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create releases
+  pages: write      # deploy Pages
+  id-token: write   # Pages OIDC
+
+jobs:
+  verify:
+    name: build + test (gcc-release)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: cmake --preset gcc-release
+
+      - name: Build
+        run: cmake --build --preset gcc-release -j"$(nproc)"
+
+      - name: Test
+        run: ctest --preset gcc-release --output-on-failure -j"$(nproc)"
+
+      - name: Package headers + static library
+        run: |
+          pkg="affinix-${{ github.ref_name }}-linux-x86_64"
+          mkdir -p "dist/$pkg"
+          cp -a include "dist/$pkg/include"
+          cp build/gcc-release/libafx.a "dist/$pkg/"
+          cp LICENSE README.md "dist/$pkg/"
+          tar -C dist -czf "$pkg.tar.gz" "$pkg"
+          echo "PACKAGE=$pkg.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ github.ref_name }}
+          path: '*.tar.gz'
+
+  release:
+    name: GitHub Release
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-${{ github.ref_name }}
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: '*.tar.gz'
+
+  docs:
+    name: docs → GitHub Pages
+    needs: verify
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install MkDocs
+        run: pip install mkdocs-material
+
+      - name: Build site
+        run: mkdocs build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - uses: actions/deploy-pages@v4
+        id: deployment

@@ -1,0 +1,35 @@
+site_name: AffiniX
+site_description: A C++20 framework for thread-affine, event-driven applications
+repo_url: https://github.com/slightlabs/AffiniX
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - tables
+  - fenced_code
+  - toc:
+      permalink: true
+
+nav:
+  - Overview: index.md
+  - Design: DESIGN.md
+  - Implementation Plan: IMPLEMENTATION_PLAN.md
+  - Decisions (ADRs):
+      - ADR index: adr/README.md
+      - adr/0001-pluggable-clock.md
+      - adr/0002-proactor-canonical-model.md
+      - adr/0003-generation-checked-handles.md
+      - adr/0004-no-blocking-itc.md
+      - adr/0005-callback-core-coroutine-layer.md
+      - adr/0006-compile-time-protocol.md
+      - adr/0007-shared-nothing-no-work-stealing.md
+      - adr/0008-context-and-deadline-propagation.md
+      - adr/0009-compile-time-affinity-annotations.md
+  - Spikes:
+      - spikes/2026-09-20-uring.md
