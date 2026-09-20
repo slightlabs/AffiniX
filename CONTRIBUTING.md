@@ -49,16 +49,39 @@ cmake --preset asan && cmake --build --preset asan && ctest --preset asan
 
 ## Code style
 
-- Formatting is `.clang-format` (run `clang-format -i` on changed files);
-  linting is `.clang-tidy`. Neither has been run over the pre-existing tree
-  yet (no clang toolchain was available to validate it in the environment
-  this was authored in) — don't be surprised if CI's format-check job needs
-  a one-time repo-wide reformat commit before it can be made blocking.
+- Formatting is `.clang-format` — LLVM 18, and it is a hard CI gate
+  (`clang-format-18 --dry-run --Werror` over `include src test examples
+  bench`). Run `clang-format -i` on changed files before pushing.
+- Linting is `.clang-tidy`; the CI job is advisory until existing
+  diagnostics are triaged.
 - Follow the surrounding file's conventions before reaching for a personal
   preference: 4-space indents, attached braces, `snake_case` for functions
   and members, `PascalCase` for types.
 - Don't add `detail::` types to a public signature (`tools/check_header_hygiene.py`
   checks this, with the limitations documented in its docstring).
+
+## Releases
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds and
+tests `gcc-release`, packages `include/` + `libafx.a` + LICENSE/README
+into a tarball, creates a GitHub Release with generated notes, and
+rebuilds the documentation site on GitHub Pages. Tag names containing a
+`-` (e.g. `v0.2.0-rc1`) publish as prereleases.
+
+```sh
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
+```
+
+## Documentation
+
+The site is MkDocs (`mkdocs.yml`, Material theme) over `docs/`; it deploys
+to GitHub Pages as part of the release workflow. Preview locally:
+
+```sh
+pip install mkdocs-material
+mkdocs serve
+```
 
 ## Definition of done
 
