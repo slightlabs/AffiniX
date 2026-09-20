@@ -683,8 +683,9 @@ AutoBackend::AutoBackend(BackendKind kind) {
             ok = false;
         } else {
             constexpr std::uint8_t required[] = {
-                IORING_OP_POLL_ADD,     IORING_OP_POLL_REMOVE, IORING_OP_SENDMSG,
-                IORING_OP_RECV,         IORING_OP_SEND,        IORING_OP_ACCEPT,
+                IORING_OP_POLL_ADD,     IORING_OP_POLL_REMOVE,
+                IORING_OP_SENDMSG,      IORING_OP_RECV,
+                IORING_OP_SEND,         IORING_OP_ACCEPT,
                 IORING_OP_ASYNC_CANCEL, IORING_OP_CONNECT,
             };
             for (std::uint8_t op : required)

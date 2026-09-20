@@ -163,7 +163,7 @@ TEST_CASE("EM timers: armed before first poll measures from real now") {
     bool fired = false;
     em.after(100ms, [&](TimerCtx) { fired = true; });
     em.poll_once();
-    CHECK(!fired);                          // 100ms has not elapsed yet
+    CHECK(!fired);  // 100ms has not elapsed yet
     em.clock().advance(150ms);
     em.poll_once();
     CHECK(fired);

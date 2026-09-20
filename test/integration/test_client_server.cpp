@@ -23,7 +23,10 @@ using afx::test::EchoProto;
 AFX_BACKEND_TEST_CASE("loopback: TcpClient connects, echoes, reconnects", EM) {
     auto emp = afx::test::make_real_em<EM>(
         EventManagerConfig{.wait = WaitStrategy::SpinThenBlock});
-    if (!emp) { MESSAGE("backend unavailable — skipped"); return; }
+    if (!emp) {
+        MESSAGE("backend unavailable — skipped");
+        return;
+    }
     EM& em = *emp;
     std::promise<void> ready;
     std::atomic<int> echoes{0};
@@ -99,11 +102,13 @@ AFX_BACKEND_TEST_CASE("loopback: TcpClient connects, echoes, reconnects", EM) {
 
 // Connect to a dead port: ConnectFailed, no auto-reconnect → Disconnected.
 AFX_BACKEND_TEST_CASE(
-    "loopback: refused connect ends Disconnected without reconnect",
-    EM) {
+    "loopback: refused connect ends Disconnected without reconnect", EM) {
     auto emp = afx::test::make_real_em<EM>(
         EventManagerConfig{.wait = WaitStrategy::SpinThenBlock});
-    if (!emp) { MESSAGE("backend unavailable — skipped"); return; }
+    if (!emp) {
+        MESSAGE("backend unavailable — skipped");
+        return;
+    }
     EM& em = *emp;
     std::promise<void> ready;
     std::atomic<ClientState> last{ClientState::Disconnected};

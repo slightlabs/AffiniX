@@ -88,7 +88,10 @@ AFX_BACKEND_TEST_CASE("loopback: TcpServer echoes frames to a real client",
                       EM) {
     auto emp = afx::test::make_real_em<EM>(
         EventManagerConfig{.wait = WaitStrategy::Block});
-    if (!emp) { MESSAGE("backend unavailable — skipped"); return; }
+    if (!emp) {
+        MESSAGE("backend unavailable — skipped");
+        return;
+    }
     EM& em = *emp;
     std::promise<std::uint16_t> port_p;
     std::atomic<bool> failed{false};

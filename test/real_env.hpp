@@ -8,8 +8,8 @@
 
 #include <memory>
 
-#include "afx/core/event_manager.hpp"
 #include "afx/backend/epoll.hpp"
+#include "afx/core/event_manager.hpp"
 #ifdef AFX_WITH_URING
 #include "afx/backend/uring.hpp"
 #endif
@@ -50,4 +50,4 @@ std::unique_ptr<EM> make_real_em(EventManagerConfig cfg) {
     return std::make_unique<EM>(std::move(cfg));
 }
 
-} // namespace afx::test
+}  // namespace afx::test
