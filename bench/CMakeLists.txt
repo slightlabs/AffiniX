@@ -19,12 +19,14 @@ foreach(bench_name IN ITEMS itc_pingpong channel_throughput timer_ops)
 endforeach()
 
 # Smoke-run each benchmark under ctest so CI catches build/runtime breakage
-# without treating runner noise as a regression.
+# without treating runner noise as a regression. RUN_SERIAL: itc_pingpong
+# spins on a reply delivered by an EM thread — under `ctest -j` on a loaded
+# shared runner that thread can be starved long enough to look like a hang.
 if(AFX_BUILD_TESTS)
   foreach(bench_name IN ITEMS itc_pingpong channel_throughput timer_ops)
     add_test(NAME bench_smoke_${bench_name}
              COMMAND bench_${bench_name})
     set_tests_properties(bench_smoke_${bench_name} PROPERTIES
-        ENVIRONMENT "AFX_BENCH_SMOKE=1" LABELS "bench")
+        ENVIRONMENT "AFX_BENCH_SMOKE=1" LABELS "bench" RUN_SERIAL TRUE)
   endforeach()
 endif()

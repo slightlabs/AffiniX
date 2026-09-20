@@ -115,6 +115,7 @@ UringBackend& UringBackend::operator=(UringBackend&& o) noexcept {
     multishot_accept_ = o.multishot_accept_;
     wake_armed_ = o.wake_armed_;
     o.wake_armed_ = false;
+    saw_wake_ = o.saw_wake_;
     sendv_ = std::move(o.sendv_);
     connect_ = std::move(o.connect_);
     pbuf_ = o.pbuf_;
@@ -358,11 +359,13 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
                 std::uint64_t v;
                 while (::read(wake_fd_, &v, sizeof(v)) == sizeof(v)) {}
                 // A multishot poll ends on any terminal CQE (error, or a
-                // successful one without F_MORE when the kernel drops the
-                // request under CQ pressure). Without re-arming, every
-                // later wake() writes an eventfd nothing polls — the loop
-                // sleeps with a non-empty mailbox. Re-arm below.
+                // success without F_MORE). Re-armed below; until then every
+                // wake() writes an eventfd nothing polls.
                 if (!(cqe.flags & IORING_CQE_F_MORE)) wake_armed_ = false;
+                // A consumed wake means a producer believed we were asleep;
+                // its push may post-date the EM's last mailbox check, so the
+                // loop must re-drain before it is allowed to block again.
+                saw_wake_ = true;
             }
             continue;
         }
@@ -655,11 +658,16 @@ Result<void> UringBackend::cancel(UserData u) {
 // ---------------------------------------------------------------------------
 
 int UringBackend::wait(std::span<Completion> out, Nanos timeout) {
+    saw_wake_ = false;
     int n = drain_cq(out);
     std::uint32_t sub = pending_;
     commit_sqes();
 
-    bool can_wait = n < int(out.size()) && timeout > Nanos::zero();
+    // Never sleep while holding undispatched completions, and never sleep
+    // after consuming a wake in the pre-drain: the producer's push can
+    // post-date the EM's mailbox recheck, and with the wake already spent
+    // nothing would interrupt the block (eventfd-style edge, not level).
+    bool can_wait = n == 0 && !saw_wake_ && timeout > Nanos::zero();
     if (sub > 0 || can_wait) {
         if (can_wait) {
             // EXT_ARG: absolute deadline is not needed — relative timespec.

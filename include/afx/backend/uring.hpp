@@ -117,6 +117,7 @@ class UringBackend {
     std::unordered_set<std::uint64_t> armed_accepts_;  // live multishot accepts
     bool multishot_accept_ = false;
     bool wake_armed_ = false;  // multishot wake poll is live in the kernel
+    bool saw_wake_ = false;    // drain_cq consumed a wake CQE this pass
 
     struct SendvCtx {
         msghdr msg{};

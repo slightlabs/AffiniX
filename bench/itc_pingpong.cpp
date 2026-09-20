@@ -38,7 +38,17 @@ int main() {
             auto t0 = steady_clock::now();
             while (!reply.try_pop(v) || v != want) {  // spin-drain reply
                 if (steady_clock::now() - t0 > spin_deadline) {
-                    std::fprintf(stderr, "itc_pingpong: reply never arrived\n");
+                    const Stats& s = em.stats();
+                    std::fprintf(stderr,
+                                 "itc_pingpong: reply never arrived "
+                                 "(iters=%llu blocks=%llu wakeups=%llu "
+                                 "pushes=%llu pops=%llu want=%llu)\n",
+                                 (unsigned long long)s.iterations,
+                                 (unsigned long long)s.blocks,
+                                 (unsigned long long)s.wakeups,
+                                 (unsigned long long)s.mailbox_pushes,
+                                 (unsigned long long)s.mailbox_pops,
+                                 (unsigned long long)want);
                     std::abort();
                 }
             }

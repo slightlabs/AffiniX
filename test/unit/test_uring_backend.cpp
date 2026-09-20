@@ -331,6 +331,25 @@ TEST_CASE("uring backend: idle wait returns at deadline; wake interrupts") {
     CHECK(dt < 5s);  // returned early, not at the 10s deadline
 }
 
+TEST_CASE("uring backend: spent wake suppresses the next blocking wait") {
+    AFX_URING_OR_SKIP(b);
+    Completion out[8];
+
+    // Regression: a wake CQE consumed by wait()'s pre-drain must not be
+    // followed by a blocking enter — the producer's push can post-date the
+    // EM's mailbox recheck, and with the wake already spent nothing would
+    // interrupt the sleep (completion-style wake is an edge, not a level).
+    b.wait(out, 0s);  // submits the internal wake-poll SQE
+    b.wake();         // eventfd write → poll fires → CQE posts (async)
+    // Let task_work deliver the CQE into the CQ ring before we wait.
+    std::this_thread::sleep_for(200ms);
+    auto t0 = std::chrono::steady_clock::now();
+    int n = b.wait(out, 5s);
+    auto dt = std::chrono::steady_clock::now() - t0;
+    CHECK(n == 0);
+    CHECK(dt < 2s);  // consumed wake → return, re-check the mailbox first
+}
+
 TEST_CASE("uring backend: drives a BasicEventManager end to end") {
     AFX_URING_OR_SKIP(b);
     using EM = BasicEventManager<SteadyClock, UringBackend>;
