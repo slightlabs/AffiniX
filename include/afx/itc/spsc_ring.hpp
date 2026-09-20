@@ -13,9 +13,10 @@ namespace afx {
 
 template <class T>
 class SpscRing {
-public:
+  public:
     explicit SpscRing(std::size_t capacity_pow2)
-        : cap_(capacity_pow2), mask_(capacity_pow2 - 1),
+        : cap_(capacity_pow2),
+          mask_(capacity_pow2 - 1),
           buf_(new T[capacity_pow2]) {
         // capacity must be a power of two
     }
@@ -28,7 +29,7 @@ public:
 
     // Producer side ----------------------------------------------------------
     bool try_push(const T& v) { return try_push_one(v); }
-    bool try_push(T&& v)      { return try_push_one(std::move(v)); }
+    bool try_push(T&& v) { return try_push_one(std::move(v)); }
 
     template <class V>
     bool try_push_one(V&& v) {
@@ -58,8 +59,7 @@ public:
         const std::size_t t = tail_.load(std::memory_order_acquire);
         std::size_t avail = t - h;
         std::size_t n = avail < max ? avail : max;
-        for (std::size_t i = 0; i < n; ++i)
-            f(std::move(buf_[(h + i) & mask_]));
+        for (std::size_t i = 0; i < n; ++i) f(std::move(buf_[(h + i) & mask_]));
         head_.store(h + n, std::memory_order_release);
         return n;
     }
@@ -92,7 +92,7 @@ public:
         return t >= h ? t - h : 0;
     }
 
-private:
+  private:
     const std::size_t cap_;
     const std::size_t mask_;
     std::unique_ptr<T[]> buf_;
@@ -100,4 +100,4 @@ private:
     alignas(64) std::atomic<std::size_t> tail_{0};
 };
 
-} // namespace afx
+}  // namespace afx

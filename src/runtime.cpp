@@ -1,12 +1,12 @@
 #include "afx/runtime.hpp"
 
-#include <cerrno>
-#include <cstring>
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstring>
 
 #include "afx/sys/clock.hpp"
 
@@ -72,8 +72,7 @@ void Runtime::start() {
     sigset_t mask;
     sigemptyset(&mask);
     for (auto& [s, _] : signal_handlers_) sigaddset(&mask, s);
-    if (!signal_handlers_.empty())
-        ::pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+    if (!signal_handlers_.empty()) ::pthread_sigmask(SIG_BLOCK, &mask, nullptr);
 
     // Resolve placement per shard.
     auto phys = topo_.physical_cores();
@@ -83,19 +82,19 @@ void Runtime::start() {
         Shard& s = *shards_[i];
         int core = -1;
         switch (s.cfg.placement) {
-        case Placement::OnePerPhysicalCore:
-            if (!phys.empty()) core = phys[phys_i++ % phys.size()];
-            break;
-        case Placement::OnePerLogicalCore:
-            if (!topo_.empty())
-                core = topo_.cores()[i % topo_.size()].id;
-            break;
-        case Placement::Explicit: {
-            auto cpus = s.cfg.cores.cpus();
-            if (!cpus.empty()) core = cpus[i % cpus.size()];
-            break;
-        }
-        case Placement::None: break;
+            case Placement::OnePerPhysicalCore:
+                if (!phys.empty()) core = phys[phys_i++ % phys.size()];
+                break;
+            case Placement::OnePerLogicalCore:
+                if (!topo_.empty()) core = topo_.cores()[i % topo_.size()].id;
+                break;
+            case Placement::Explicit: {
+                auto cpus = s.cfg.cores.cpus();
+                if (!cpus.empty()) core = cpus[i % cpus.size()];
+                break;
+            }
+            case Placement::None:
+                break;
         }
         s.thread = std::thread([this, &s, core] { thread_main(s, core); });
     }
@@ -116,7 +115,7 @@ void Runtime::thread_main(Shard& s, int core) {
         if (auto r = pin_this_thread(one); !r) {
             s.start_error = r.error();
             s.failed = true;
-            s.ready = true;     // publish so mailboxes() doesn't hang
+            s.ready = true;  // publish so mailboxes() doesn't hang
             return;
         }
     }
@@ -170,8 +169,7 @@ void Runtime::shutdown(Duration) {
     // Drain sequence (§20): tell each EM to stop; EMs close listeners and
     // connections as their own teardown runs.
     for (auto& s : shards_)
-        if (EventManager* e = s->em.load(std::memory_order_acquire))
-            e->stop();
+        if (EventManager* e = s->em.load(std::memory_order_acquire)) e->stop();
     signal_stop_.store(true, std::memory_order_release);
     if (signal_selfpipe_[1] >= 0) {
         char b = 1;
@@ -185,4 +183,4 @@ void Runtime::join() {
     if (signal_thread_.joinable()) signal_thread_.join();
 }
 
-} // namespace afx
+}  // namespace afx

@@ -1,9 +1,9 @@
 #include "afx/sys/affinity.hpp"
 
-#include <cerrno>
-#include <cstring>
 #include <pthread.h>
 #include <sched.h>
+#include <cerrno>
+#include <cstring>
 
 namespace afx {
 
@@ -27,7 +27,7 @@ Result<void> apply_sched_this_thread(const SchedPolicy& p) {
                 return {};
             } else {
                 int policy = std::is_same_v<T, SchedPolicy::Fifo> ? SCHED_FIFO
-                                                                : SCHED_RR;
+                                                                  : SCHED_RR;
                 sched_param sp{};
                 sp.sched_priority = v.prio;
                 if (::sched_setscheduler(0, policy, &sp) < 0)
@@ -47,4 +47,4 @@ Result<CoreSet> allowed_cpus() {
     return s;
 }
 
-} // namespace afx
+}  // namespace afx

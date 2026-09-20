@@ -27,7 +27,7 @@ TEST_CASE("Runtime spawns shards and they publish mailboxes") {
     g.each([&](EventManager&) { ++setup_ran; });
     rt.start();
 
-    auto mbs = g.mailboxes();            // blocks until ready
+    auto mbs = g.mailboxes();  // blocks until ready
     CHECK(mbs.size() == 2);
     CHECK(wait_until([&] { return setup_ran == 2; }));
 
@@ -61,7 +61,7 @@ TEST_CASE("Runtime: cross-shard post runs on the owning thread") {
             ++on_owner;
         });
     CHECK(wait_until([&] { return on_owner == int(mbs.size()); }));
-    CHECK(tids[0] != tids[1]);           // distinct shard threads
+    CHECK(tids[0] != tids[1]);  // distinct shard threads
     CHECK(tids[0] != std::this_thread::get_id());
 
     rt.shutdown(5s);
@@ -76,7 +76,7 @@ TEST_CASE("Runtime shutdown is idempotent and joins cleanly") {
     rt.start();
     g.mailboxes();
     rt.shutdown(1s);
-    rt.shutdown(1s);                     // second call is a no-op
+    rt.shutdown(1s);  // second call is a no-op
     rt.join();
 }
 

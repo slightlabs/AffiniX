@@ -4,10 +4,10 @@
 
 #include <doctest/doctest.h>
 
-#include <cerrno>
-#include <memory>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <cerrno>
+#include <memory>
 #include <vector>
 
 #include "../proto.hpp"
@@ -16,10 +16,10 @@
 #include "afx/net/tcp_server.hpp"
 
 using namespace afx;
-using afx::test::EchoProto;
-using afx::test::EchoMsg;
-using afx::test::TestEnv;
 using afx::test::echo_frame;
+using afx::test::EchoMsg;
+using afx::test::EchoProto;
+using afx::test::TestEnv;
 
 namespace {
 
@@ -44,8 +44,8 @@ std::unique_ptr<Conn> make_conn(TestEnv& env, int cfd, CloseLog& log,
     h->on_close = [&](ConnId, CloseReason r) { log.reasons.push_back(r); };
     Handlers<EchoProto>* hp = h.get();
     handler_registry().push_back(std::move(h));
-    auto conn = std::make_unique<Conn>(env.em, cfd, *hp, params,
-                                       &log, [](void* p, ConnId, CloseReason) {
+    auto conn = std::make_unique<Conn>(
+        env.em, cfd, *hp, params, &log, [](void* p, ConnId, CloseReason) {
             static_cast<CloseLog*>(p)->owner_notifies++;
         });
     conn->start(Peer{SockAddr::loopback(4321)});
@@ -53,8 +53,7 @@ std::unique_ptr<Conn> make_conn(TestEnv& env, int cfd, CloseLog& log,
 }
 
 // After the first close, extra activity must not re-trigger on_close.
-void assert_quiet(TestEnv& env, int cfd, CloseLog& log,
-                  CloseReason expected) {
+void assert_quiet(TestEnv& env, int cfd, CloseLog& log, CloseReason expected) {
     REQUIRE(log.reasons.size() == 1);
     CHECK(log.reasons[0] == expected);
     auto f = echo_frame("after-close");
@@ -64,7 +63,7 @@ void assert_quiet(TestEnv& env, int cfd, CloseLog& log,
     CHECK(log.owner_notifies == 1);
 }
 
-} // namespace
+}  // namespace
 
 TEST_CASE("invariant: on_close exactly once — peer FIN") {
     TestEnv env;
@@ -90,7 +89,7 @@ TEST_CASE("invariant: on_close exactly once — local close") {
     auto conn = make_conn(env, cfd, log);
 
     conn->close(CloseReason::LocalClose);
-    conn->close(CloseReason::LocalClose);   // idempotent
+    conn->close(CloseReason::LocalClose);  // idempotent
     env.pump(2);
     assert_quiet(env, cfd, log, CloseReason::LocalClose);
     handler_registry().clear();
@@ -103,7 +102,7 @@ TEST_CASE("invariant: on_close exactly once — framing error") {
     auto conn = make_conn(env, cfd, log);
 
     auto bad = echo_frame("x");
-    bad[0] = std::byte(0x00);               // break the magic byte
+    bad[0] = std::byte(0x00);  // break the magic byte
     env.sim().feed(cfd, ByteSpan(bad.data(), bad.size()));
     env.pump(2);
     assert_quiet(env, cfd, log, CloseReason::FrameError);
@@ -143,21 +142,22 @@ TEST_CASE("invariant: on_close exactly once — EM shutdown closes conns") {
         Handlers<EchoProto> h;
         h.on_close = [&](ConnId, CloseReason r) { log.reasons.push_back(r); };
         ServerConfig cfg;
-        cfg.bind = SockAddr::loopback(0);   // real socket, sim-driven accept
-        cfg.sock.nodelay = false;           // TCP_NODELAY won't apply to AF_UNIX
+        cfg.bind = SockAddr::loopback(0);  // real socket, sim-driven accept
+        cfg.sock.nodelay = false;          // TCP_NODELAY won't apply to AF_UNIX
         auto srv = env.em.make_server<EchoProto>(cfg, std::move(h));
         REQUIRE(srv.has_value());
 
         // The accepted fd must be a real socket — apply() and teardown run
         // real syscalls on it — so hand the sim a socketpair end.
         int pair[2];
-        REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, pair) == 0);
+        REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, pair) ==
+                0);
         env.sim().deliver_accept((*srv)->listen_fd(), pair[0]);
         env.pump(2);
         CHECK((*srv)->connection_count() == 1);
         CHECK(log.reasons.empty());
         ::close(pair[1]);
-    }   // ~EM -> ~TcpServer -> close(Shutdown) on the live connection
+    }  // ~EM -> ~TcpServer -> close(Shutdown) on the live connection
     REQUIRE(log.reasons.size() == 1);
     CHECK(log.reasons[0] == CloseReason::Shutdown);
 }

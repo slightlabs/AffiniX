@@ -30,18 +30,19 @@ int stress_scale() {
     return 1;
 }
 
-} // namespace
+}  // namespace
 
 TEST_CASE("stress: every post is delivered across block/spin transitions") {
     const int scale = stress_scale();
     constexpr int kProducers = 4;
     const int kMsgs = 20'000 * scale;
 
-    for (WaitStrategy wait : {WaitStrategy::Block, WaitStrategy::SpinThenBlock}) {
+    for (WaitStrategy wait :
+         {WaitStrategy::Block, WaitStrategy::SpinThenBlock}) {
         CAPTURE(int(wait));
         EventManagerConfig cfg;
         cfg.wait = wait;
-        cfg.spin_budget = 10us;      // tiny: cross the arm/block seam often
+        cfg.spin_budget = 10us;  // tiny: cross the arm/block seam often
         EventManager em(cfg);
 
         std::atomic<std::uint64_t> delivered{0};
@@ -97,8 +98,7 @@ TEST_CASE("stress: every post is delivered across block/spin transitions") {
         em.stop();
         loop.join();
 
-        CHECK(em.stats().mailbox_pops ==
-              std::uint64_t(kProducers) * kMsgs + 1);
+        CHECK(em.stats().mailbox_pops == std::uint64_t(kProducers) * kMsgs + 1);
     }
 }
 
@@ -119,8 +119,7 @@ TEST_CASE("stress: MPSC ring preserves per-producer order, no loss") {
             while (!go.load(std::memory_order_acquire)) {}
             for (std::uint64_t i = 0; i < std::uint64_t(kMsgs); ++i) {
                 std::uint64_t v = (std::uint64_t(p) << 48) | i;
-                while (!ring.try_push(v))
-                    std::this_thread::yield();
+                while (!ring.try_push(v)) std::this_thread::yield();
             }
         });
     }
@@ -136,7 +135,10 @@ TEST_CASE("stress: MPSC ring preserves per-producer order, no loss") {
         std::uint64_t v;
         std::uint64_t got = 0;
         while (got < expected_total) {
-            if (!ring.try_pop(v)) { std::this_thread::yield(); continue; }
+            if (!ring.try_pop(v)) {
+                std::this_thread::yield();
+                continue;
+            }
             ++got;
             int p = int(v >> 48);
             std::uint64_t seq = v & ((1ULL << 48) - 1);

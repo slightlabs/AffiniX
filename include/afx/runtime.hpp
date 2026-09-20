@@ -18,22 +18,22 @@
 namespace afx {
 
 enum class Placement : std::uint8_t {
-    OnePerPhysicalCore,     // skip SMT siblings — default for spinning loops
+    OnePerPhysicalCore,  // skip SMT siblings — default for spinning loops
     OnePerLogicalCore,
-    Explicit,               // use ThreadConfig::cores round-robin
-    None,                   // restricted containers: no pinning attempted
+    Explicit,  // use ThreadConfig::cores round-robin
+    None,      // restricted containers: no pinning attempted
 };
 
 struct ThreadConfig {
-    CoreSet    cores{};
-    Placement  placement = Placement::OnePerPhysicalCore;
+    CoreSet cores{};
+    Placement placement = Placement::OnePerPhysicalCore;
     SchedPolicy sched{};
-    NumaPolicy numa      = NumaPolicy::LocalAlloc;
+    NumaPolicy numa = NumaPolicy::LocalAlloc;
     EventManagerConfig em{};
 };
 
 class Runtime {
-public:
+  public:
     explicit Runtime(Topology topo) : topo_(std::move(topo)) {}
     ~Runtime();
 
@@ -41,13 +41,14 @@ public:
     Runtime& operator=(const Runtime&) = delete;
 
     class Group {
-    public:
+      public:
         // Runs fn(EventManager&) on each shard's thread at startup, before
         // the loop begins. Multiple each() registrations compose.
         Group& each(std::function<void(EventManager&)> fn);
         std::vector<Mailbox> mailboxes() const;
         std::size_t size() const noexcept { return count_; }
-    private:
+
+      private:
         friend class Runtime;
         Group(Runtime* rt, std::size_t begin, std::size_t count)
             : rt_(rt), begin_(begin), count_(count) {}
@@ -61,9 +62,9 @@ public:
     // never in an async signal handler.
     void on_signal(std::vector<int> signals, std::function<void()> fn);
 
-    void start();                       // launch all threads
-    void join();                        // wait for all threads to exit
-    void shutdown(Duration timeout);    // defined drain sequence (§20)
+    void start();                     // launch all threads
+    void join();                      // wait for all threads to exit
+    void shutdown(Duration timeout);  // defined drain sequence (§20)
 
     std::size_t shards() const noexcept { return shards_.size(); }
     std::vector<Mailbox> mailboxes() const;
@@ -72,7 +73,7 @@ public:
     // A stop reason is observable from Runtime (§18).
     bool stopping() const noexcept { return stopping_.load(); }
 
-private:
+  private:
     struct Shard {
         std::string name;
         ThreadConfig cfg;
@@ -97,4 +98,4 @@ private:
     int signal_selfpipe_[2] = {-1, -1};
 };
 
-} // namespace afx
+}  // namespace afx

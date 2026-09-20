@@ -19,11 +19,11 @@ template <class M>
 struct ParseResult {
     enum class Kind : std::uint8_t { Message, NeedMore, Error };
 
-    Kind        kind = Kind::NeedMore;
-    M           message{};
-    std::size_t consumed = 0;   // Kind::Message: bytes to retire
-    std::size_t need = 0;       // Kind::NeedMore: at least this many more
-    Error       error{};
+    Kind kind = Kind::NeedMore;
+    M message{};
+    std::size_t consumed = 0;  // Kind::Message: bytes to retire
+    std::size_t need = 0;      // Kind::NeedMore: at least this many more
+    Error error{};
 
     static ParseResult message_result(M m, std::size_t consumed) {
         ParseResult r;
@@ -55,19 +55,20 @@ concept Protocol = requires(const P& p, ByteSpan in) {
 
 // Convenience form: a fixed-size header states the body length.
 template <class P>
-concept FixedHeaderProtocol = requires(const P& p, const typename P::Header& h) {
-    typename P::Header;
-    typename P::Message;
-    { P::kHeaderSize } -> std::convertible_to<std::size_t>;
-    { p.validate(h) }   -> std::same_as<Result<void>>;
-    { p.body_size(h) }  -> std::same_as<Result<std::size_t>>;
-};
+concept FixedHeaderProtocol =
+    requires(const P& p, const typename P::Header& h) {
+        typename P::Header;
+        typename P::Message;
+        { P::kHeaderSize } -> std::convertible_to<std::size_t>;
+        { p.validate(h) } -> std::same_as<Result<void>>;
+        { p.body_size(h) } -> std::same_as<Result<std::size_t>>;
+    };
 
 // A parsed frame: header by value (§25 — the framework never reinterprets
 // wire bytes as a struct), body a view into the read buffer.
 template <class H>
 struct FrameView {
-    H        header{};
+    H header{};
     ByteSpan body{};
 };
 
@@ -75,7 +76,7 @@ struct FrameView {
 // there is exactly one read path (§14.1).
 template <FixedHeaderProtocol P>
 struct FixedHeaderFramer {
-    using Header  = typename P::Header;
+    using Header = typename P::Header;
     using Message = typename P::Message;
 
     P proto{};
@@ -88,16 +89,17 @@ struct FixedHeaderFramer {
         if (auto r = proto.validate(h); !r)
             return ParseResult<Message>::error_result(r.error());
         auto bs = proto.body_size(h);
-        if (!bs)
-            return ParseResult<Message>::error_result(bs.error());
+        if (!bs) return ParseResult<Message>::error_result(bs.error());
         std::size_t total = P::kHeaderSize + *bs;
         if (in.size() < total)
             return ParseResult<Message>::need_more(total - in.size());
         ByteSpan body = in.subspan(P::kHeaderSize, *bs);
         if constexpr (std::is_constructible_v<Message, Header, ByteSpan>) {
-            return ParseResult<Message>::message_result(Message{h, body}, total);
+            return ParseResult<Message>::message_result(Message{h, body},
+                                                        total);
         } else {
-            return ParseResult<Message>::message_result(Message{h, body}, total);
+            return ParseResult<Message>::message_result(Message{h, body},
+                                                        total);
         }
     }
 };
@@ -110,9 +112,13 @@ using MessageBatch = std::span<const typename P::Message>;
 // Pick the framer for a user protocol type: a Protocol is used directly, a
 // FixedHeaderProtocol is wrapped.
 template <class P>
-struct FramerFor { using type = FixedHeaderFramer<P>; };
+struct FramerFor {
+    using type = FixedHeaderFramer<P>;
+};
 template <Protocol P>
-struct FramerFor<P> { using type = P; };
+struct FramerFor<P> {
+    using type = P;
+};
 template <class P>
 using FramerForT = typename FramerFor<P>::type;
 
@@ -120,4 +126,4 @@ using FramerForT = typename FramerFor<P>::type;
 template <class P>
 using MessageForT = typename FramerForT<P>::Message;
 
-} // namespace afx
+}  // namespace afx

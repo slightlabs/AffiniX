@@ -19,10 +19,10 @@
 #include "afx/net/protocol.hpp"
 
 using namespace afx;
-using afx::test::EchoHeader;
-using afx::test::EchoProto;
-using afx::test::EchoMsg;
 using afx::test::echo_frame;
+using afx::test::EchoHeader;
+using afx::test::EchoMsg;
+using afx::test::EchoProto;
 
 namespace {
 
@@ -35,16 +35,15 @@ std::uint64_t fuzz_seed() {
 // The same consume loop Connection::on_recv runs: parse, retire, repeat.
 struct FrameSink {
     FixedHeaderFramer<EchoProto> framer;
-    std::vector<std::byte>       pending;
-    std::vector<std::string>     bodies;
+    std::vector<std::byte> pending;
+    std::vector<std::string> bodies;
     int errors = 0;
 
     // Feed a chunk; returns false on unrecoverable desync policy choice.
     void feed(ByteSpan chunk) {
         pending.insert(pending.end(), chunk.begin(), chunk.end());
         for (;;) {
-            auto pr = framer.parse(
-                ByteSpan(pending.data(), pending.size()));
+            auto pr = framer.parse(ByteSpan(pending.data(), pending.size()));
             using Kind = decltype(pr)::Kind;
             if (pr.kind == Kind::NeedMore) {
                 CHECK(pr.need > 0);
@@ -60,8 +59,8 @@ struct FrameSink {
             bodies.emplace_back(
                 reinterpret_cast<const char*>(pr.message.body.data()),
                 pr.message.body.size());
-            pending.erase(pending.begin(), pending.begin() +
-                          std::ptrdiff_t(pr.consumed));
+            pending.erase(pending.begin(),
+                          pending.begin() + std::ptrdiff_t(pr.consumed));
         }
     }
 };
@@ -72,7 +71,7 @@ std::string random_body(std::mt19937_64& rng) {
     return s;
 }
 
-} // namespace
+}  // namespace
 
 TEST_CASE("fuzz: valid frames decode exactly under arbitrary splits") {
     std::mt19937_64 rng(fuzz_seed());
@@ -114,8 +113,7 @@ TEST_CASE("fuzz: byte-at-a-time delivery decodes identically") {
             stream.insert(stream.end(), f.begin(), f.end());
         }
         FrameSink sink;
-        for (std::byte b : stream)
-            sink.feed(ByteSpan(&b, 1));
+        for (std::byte b : stream) sink.feed(ByteSpan(&b, 1));
         CHECK(sink.errors == 0);
         CHECK(sink.bodies == expected);
     }
@@ -166,8 +164,8 @@ TEST_CASE("fuzz: connection read path survives arbitrary splits") {
     };
     int cfd = env.sim().add_fd();
     auto conn = std::make_unique<Connection<EchoProto, EM>>(
-        env.em, cfd, h, typename Connection<EchoProto, EM>::Params{},
-        nullptr, [](void*, ConnId, CloseReason) {});
+        env.em, cfd, h, typename Connection<EchoProto, EM>::Params{}, nullptr,
+        [](void*, ConnId, CloseReason) {});
     conn->start(Peer{SockAddr::loopback(1111)});
 
     std::vector<std::byte> stream;

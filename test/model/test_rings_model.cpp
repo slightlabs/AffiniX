@@ -25,7 +25,7 @@ std::mt19937_64 rng_for(const char* name, std::uint64_t seed) {
     return std::mt19937_64(seed);
 }
 
-} // namespace
+}  // namespace
 
 TEST_CASE("model: SpscRing matches std::deque over random op sequences") {
     constexpr std::size_t kCap = 64;
@@ -42,51 +42,53 @@ TEST_CASE("model: SpscRing matches std::deque over random op sequences") {
             std::uint64_t(2'000'000 * afx::test::model_scale());
         for (std::uint64_t step = 0; step < steps; ++step) {
             switch (rng() % 4) {
-            case 0: {   // single push
-                std::uint64_t v = next_val;
-                bool ok = ring.try_push(v);
-                CHECK(ok == (model.size() < kCap));
-                if (ok) model.push_back(v), ++next_val;
-                break;
-            }
-            case 1: {   // bulk push of a random count
-                std::size_t want = rng() % (kCap + 8);
-                std::vector<std::uint64_t> batch(want);
-                for (auto& v : batch) v = next_val++;
-                std::size_t n = ring.try_push_bulk(batch);
-                CHECK(n == std::min(want, kCap - model.size()));
-                for (std::size_t i = 0; i < n; ++i) model.push_back(batch[i]);
-                next_val -= want - n;   // unpushed values aren't consumed
-                break;
-            }
-            case 2: {   // drain up to random max
-                std::size_t max = rng() % (kCap + 8);
-                std::size_t expected = std::min(max, model.size());
-                std::size_t got = ring.drain(
-                    [&](std::uint64_t v) {
-                        CHECK(v == model.front());
-                        model.pop_front();
-                    },
-                    max);
-                CHECK(got == expected);
-                break;
-            }
-            case 3: {   // contiguous-claim drain
-                std::size_t max = rng() % (kCap + 8);
-                std::size_t before = model.size();
-                ring.drain_contiguous(
-                    [&](std::span<std::uint64_t> s) {
-                        CHECK(s.size() <= max);
-                        for (std::uint64_t v : s) {
+                case 0: {  // single push
+                    std::uint64_t v = next_val;
+                    bool ok = ring.try_push(v);
+                    CHECK(ok == (model.size() < kCap));
+                    if (ok) model.push_back(v), ++next_val;
+                    break;
+                }
+                case 1: {  // bulk push of a random count
+                    std::size_t want = rng() % (kCap + 8);
+                    std::vector<std::uint64_t> batch(want);
+                    for (auto& v : batch) v = next_val++;
+                    std::size_t n = ring.try_push_bulk(batch);
+                    CHECK(n == std::min(want, kCap - model.size()));
+                    for (std::size_t i = 0; i < n; ++i)
+                        model.push_back(batch[i]);
+                    next_val -= want - n;  // unpushed values aren't consumed
+                    break;
+                }
+                case 2: {  // drain up to random max
+                    std::size_t max = rng() % (kCap + 8);
+                    std::size_t expected = std::min(max, model.size());
+                    std::size_t got = ring.drain(
+                        [&](std::uint64_t v) {
                             CHECK(v == model.front());
                             model.pop_front();
-                        }
-                    },
-                    max);
-                // Progress whenever items were available and max allowed it.
-                if (before > 0 && max > 0) CHECK(model.size() < before);
-                break;
-            }
+                        },
+                        max);
+                    CHECK(got == expected);
+                    break;
+                }
+                case 3: {  // contiguous-claim drain
+                    std::size_t max = rng() % (kCap + 8);
+                    std::size_t before = model.size();
+                    ring.drain_contiguous(
+                        [&](std::span<std::uint64_t> s) {
+                            CHECK(s.size() <= max);
+                            for (std::uint64_t v : s) {
+                                CHECK(v == model.front());
+                                model.pop_front();
+                            }
+                        },
+                        max);
+                    // Progress whenever items were available and max allowed
+                    // it.
+                    if (before > 0 && max > 0) CHECK(model.size() < before);
+                    break;
+                }
             }
             CHECK(ring.empty() == model.empty());
             CHECK(ring.size_approx() == model.size());
@@ -111,35 +113,36 @@ TEST_CASE("model: MpscRing matches std::deque over random op sequences") {
             std::uint64_t(2'000'000 * afx::test::model_scale());
         for (std::uint64_t step = 0; step < steps; ++step) {
             switch (rng() % 3) {
-            case 0: {
-                std::uint64_t v = next_val;
-                bool ok = ring.try_push(v);
-                CHECK(ok == (model.size() < kCap));
-                if (ok) model.push_back(v), ++next_val;
-                break;
-            }
-            case 1: {
-                std::size_t want = rng() % (kCap + 8);
-                std::vector<std::uint64_t> batch(want);
-                for (auto& v : batch) v = next_val++;
-                std::size_t n = ring.try_push_bulk(batch);
-                CHECK(n == std::min(want, kCap - model.size()));
-                for (std::size_t i = 0; i < n; ++i) model.push_back(batch[i]);
-                next_val -= want - n;
-                break;
-            }
-            case 2: {
-                std::size_t max = rng() % (kCap + 8);
-                std::size_t expected = std::min(max, model.size());
-                std::size_t got = ring.drain(
-                    [&](std::uint64_t v) {
-                        CHECK(v == model.front());
-                        model.pop_front();
-                    },
-                    max);
-                CHECK(got == expected);
-                break;
-            }
+                case 0: {
+                    std::uint64_t v = next_val;
+                    bool ok = ring.try_push(v);
+                    CHECK(ok == (model.size() < kCap));
+                    if (ok) model.push_back(v), ++next_val;
+                    break;
+                }
+                case 1: {
+                    std::size_t want = rng() % (kCap + 8);
+                    std::vector<std::uint64_t> batch(want);
+                    for (auto& v : batch) v = next_val++;
+                    std::size_t n = ring.try_push_bulk(batch);
+                    CHECK(n == std::min(want, kCap - model.size()));
+                    for (std::size_t i = 0; i < n; ++i)
+                        model.push_back(batch[i]);
+                    next_val -= want - n;
+                    break;
+                }
+                case 2: {
+                    std::size_t max = rng() % (kCap + 8);
+                    std::size_t expected = std::min(max, model.size());
+                    std::size_t got = ring.drain(
+                        [&](std::uint64_t v) {
+                            CHECK(v == model.front());
+                            model.pop_front();
+                        },
+                        max);
+                    CHECK(got == expected);
+                    break;
+                }
             }
             CHECK(ring.empty() == model.empty());
         }
@@ -153,7 +156,7 @@ TEST_CASE("model: ring indices survive many wrap-arounds") {
     std::uint64_t push_v = 0, pop_v = 0;
     for (int lap = 0; lap < 200'000; ++lap) {
         for (int i = 0; i < 8; ++i) REQUIRE(ring.try_push(push_v++));
-        CHECK(!ring.try_push(push_v));                  // genuinely full
+        CHECK(!ring.try_push(push_v));  // genuinely full
         for (int i = 0; i < 8; ++i) {
             std::uint64_t seen = ~std::uint64_t(0);
             ring.drain([&](std::uint64_t v) { seen = v; }, 1);

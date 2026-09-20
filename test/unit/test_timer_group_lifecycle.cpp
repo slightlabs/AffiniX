@@ -27,8 +27,8 @@ TEST_CASE("timer group: firing a member does not corrupt the group") {
     int fired = 0;
     env.em.after(1ms, [&](TimerCtx) { ++fired; }, g);
 
-    env.advance(1ms);            // fires; slot queued for reclamation
-    env.pump();                  // bookkeeping: reclaim() recycles the slot
+    env.advance(1ms);  // fires; slot queued for reclamation
+    env.pump();        // bookkeeping: reclaim() recycles the slot
 
     CHECK(fired == 1);
     // The group must be empty now; cancel_group must terminate instantly.
@@ -41,9 +41,9 @@ TEST_CASE("timer group: recycled slot does not alias into the old group") {
     TimerGroup g2 = env.em.make_timer_group();
 
     int a_fired = 0, b_fired = 0;
-    env.em.after(1ms, [&](TimerCtx) { ++a_fired; }, g1);   // slot S
+    env.em.after(1ms, [&](TimerCtx) { ++a_fired; }, g1);  // slot S
     env.advance(1ms);
-    env.pump();                          // S is reclaimed to the free list
+    env.pump();  // S is reclaimed to the free list
 
     // Arm enough timers that S is handed out again — in a different group.
     std::vector<TimerId> ids;
@@ -72,21 +72,21 @@ TEST_CASE("timer group: cancel_group survives table growth") {
         env.em.after(Duration(1h + Nanos(i)), [](TimerCtx) {}, g);
 
     CHECK(env.em.cancel_group(g) == kN);
-    CHECK(env.em.cancel_group(g) == 0);    // idempotent on an empty group
+    CHECK(env.em.cancel_group(g) == 0);  // idempotent on an empty group
 }
 
 TEST_CASE("timer: cancel of a stale id is a harmless no-op") {
     TestEnv env;
     TimerId id = env.em.after(1ms, [](TimerCtx) {});
     CHECK(env.em.cancel(id));
-    env.pump();                            // reclaim the slot
+    env.pump();  // reclaim the slot
 
     // Arm + fire an unrelated timer so the slot is reused and the stale
     // generation is thoroughly dead.
     env.em.after(1ms, [](TimerCtx) {});
     env.advance(2ms);
 
-    CHECK(!env.em.cancel(id));             // stale handle: no-op, no crash
+    CHECK(!env.em.cancel(id));  // stale handle: no-op, no crash
     CHECK(env.em.time_until(id) == std::nullopt);
 }
 
@@ -100,7 +100,7 @@ TEST_CASE("timer: self-cancel inside the callback works") {
     });
     env.advance(1ms);
     env.advance(5ms);
-    CHECK(fired == 1);                     // fired once, then dead
+    CHECK(fired == 1);  // fired once, then dead
 }
 
 TEST_CASE("timer: cancel of a pending member removes it from the group") {
@@ -122,15 +122,16 @@ TEST_CASE("timer group: reschedule keeps group membership") {
     TimerGroup g = env.em.make_timer_group();
 
     int fired = 0;
-    TimerId id = env.em.every(1ms, [&](TimerCtx) { ++fired; },
-                              Duration::zero(), RepeatMode::FixedRate, g);
-    for (int i = 0; i < 3; ++i) env.advance(1ms);   // one coalesced fire/pump
+    TimerId id = env.em.every(
+        1ms, [&](TimerCtx) { ++fired; }, Duration::zero(),
+        RepeatMode::FixedRate, g);
+    for (int i = 0; i < 3; ++i) env.advance(1ms);  // one coalesced fire/pump
     REQUIRE(fired == 3);
 
-    env.em.reschedule(id, 1h);             // reinsert: still a group member
-    CHECK(env.em.cancel_group(g) == 1);    // must find and cancel it
+    env.em.reschedule(id, 1h);           // reinsert: still a group member
+    CHECK(env.em.cancel_group(g) == 1);  // must find and cancel it
 
     env.advance(2h);
     env.pump();
-    CHECK(fired == 3);                     // no further fires
+    CHECK(fired == 3);  // no further fires
 }

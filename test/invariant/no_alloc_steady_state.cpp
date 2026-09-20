@@ -11,11 +11,11 @@
 
 #include <doctest/doctest.h>
 
+#include <sys/socket.h>
+#include <unistd.h>
 #include <atomic>
 #include <cstdlib>
 #include <new>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include "../test_env.hpp"
 #include "afx/core/event_manager.hpp"
@@ -24,7 +24,7 @@ using namespace afx;
 
 namespace {
 
-std::atomic<bool>        g_armed{false};
+std::atomic<bool> g_armed{false};
 std::atomic<std::size_t> g_allocs{0};
 
 void* counted_alloc(std::size_t n) {
@@ -35,10 +35,14 @@ void* counted_alloc(std::size_t n) {
     return p;
 }
 
-} // namespace
+}  // namespace
 
-void* operator new(std::size_t n) { return counted_alloc(n); }
-void* operator new[](std::size_t n) { return counted_alloc(n); }
+void* operator new(std::size_t n) {
+    return counted_alloc(n);
+}
+void* operator new[](std::size_t n) {
+    return counted_alloc(n);
+}
 void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
     if (g_armed.load(std::memory_order_relaxed))
         g_allocs.fetch_add(1, std::memory_order_relaxed);
@@ -61,14 +65,30 @@ void* operator new[](std::size_t n, std::align_val_t a) {
     return operator new(n, a);
 }
 
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
-void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
-void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
-void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::align_val_t) noexcept { std::free(p); }
+void operator delete(void* p) noexcept {
+    std::free(p);
+}
+void operator delete[](void* p) noexcept {
+    std::free(p);
+}
+void operator delete(void* p, std::size_t) noexcept {
+    std::free(p);
+}
+void operator delete[](void* p, std::size_t) noexcept {
+    std::free(p);
+}
+void operator delete(void* p, const std::nothrow_t&) noexcept {
+    std::free(p);
+}
+void operator delete[](void* p, const std::nothrow_t&) noexcept {
+    std::free(p);
+}
+void operator delete(void* p, std::align_val_t) noexcept {
+    std::free(p);
+}
+void operator delete[](void* p, std::align_val_t) noexcept {
+    std::free(p);
+}
 // Sized+aligned forms too — an over-aligned deallocation resolves to these;
 // leaving them to the runtime would route ASan-malloc-family memory through
 // its operator-delete interceptor and trip alloc-dealloc-mismatch.
@@ -82,7 +102,10 @@ void operator delete[](void* p, std::size_t, std::align_val_t) noexcept {
 namespace {
 
 struct ArmGuard {
-    ArmGuard()  { g_allocs.store(0); g_armed.store(true); }
+    ArmGuard() {
+        g_allocs.store(0);
+        g_armed.store(true);
+    }
     ~ArmGuard() { g_armed.store(false); }
 };
 
@@ -93,7 +116,7 @@ void pump_echo(EventManager& em, int peer_fd, std::string_view payload) {
     for (int i = 0; i < 64; ++i) em.poll_once();
 }
 
-} // namespace
+}  // namespace
 
 TEST_CASE("invariant: steady-state loop iterations do not allocate") {
     EventManager em(EventManagerConfig{.wait = WaitStrategy::Spin});

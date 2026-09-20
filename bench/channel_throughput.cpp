@@ -7,8 +7,8 @@
 #include <span>
 #include <vector>
 
-#include "bench_env.hpp"
 #include "afx/itc/channel.hpp"
+#include "bench_env.hpp"
 
 using namespace afx;
 
@@ -23,8 +23,8 @@ int main() {
         // not contention).
         {
             char label[64];
-            std::snprintf(label, sizeof label,
-                          "channel<%s> push+drain x1", name);
+            std::snprintf(label, sizeof label, "channel<%s> push+drain x1",
+                          name);
             auto b = afx::bench::make_bench();
             b.batch(1).run(label, [&] {
                 tx.try_push(1);
@@ -35,8 +35,8 @@ int main() {
         {
             std::vector<std::uint64_t> batch(256, 7);
             char label[64];
-            std::snprintf(label, sizeof label,
-                          "channel<%s> push+drain x256", name);
+            std::snprintf(label, sizeof label, "channel<%s> push+drain x256",
+                          name);
             auto b = afx::bench::make_bench();
             b.batch(256).run(label, [&] {
                 tx.try_push_bulk(batch);

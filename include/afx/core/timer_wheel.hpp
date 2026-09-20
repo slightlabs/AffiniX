@@ -20,11 +20,11 @@ namespace afx {
 enum class RepeatMode : std::uint8_t { FixedRate, FixedDelay };
 
 struct TimerCtx {
-    TimerId       id;
-    TimePoint     scheduled;      // when it should have fired
-    TimePoint     now;            // when it actually fired
-    std::uint32_t missed = 0;     // coalesced overruns (FixedRate only)
-    Duration      lateness() const { return now - scheduled; }
+    TimerId id;
+    TimePoint scheduled;       // when it should have fired
+    TimePoint now;             // when it actually fired
+    std::uint32_t missed = 0;  // coalesced overruns (FixedRate only)
+    Duration lateness() const { return now - scheduled; }
 };
 
 using TimerFn = InlineFn<void(TimerCtx), 48>;
@@ -32,24 +32,24 @@ using TimerFn = InlineFn<void(TimerCtx), 48>;
 // Intrusive node: lives in an EM-owned HandleTable<TimerNode, TimerId>.
 // bucket_* links it into a wheel slot; group_* links it into its TimerGroup.
 struct TimerNode {
-    TimePoint   expiry{};
+    TimePoint expiry{};
     std::uint64_t expiry_tick = 0;
-    Duration    period{};
-    RepeatMode  mode = RepeatMode::FixedRate;
-    TimerFn     fn;
+    Duration period{};
+    RepeatMode mode = RepeatMode::FixedRate;
+    TimerFn fn;
 
-    TimerNode*  bucket_prev = nullptr;
-    TimerNode*  bucket_next = nullptr;
+    TimerNode* bucket_prev = nullptr;
+    TimerNode* bucket_next = nullptr;
 
-    TimerNode*  group_prev = nullptr;
-    TimerNode*  group_next = nullptr;
-    TimerGroup  group{};
+    TimerNode* group_prev = nullptr;
+    TimerNode* group_next = nullptr;
+    TimerGroup group{};
 
-    Context     ctx{};             // ambient context captured at arm (§7.4)
-    TimerId     id{};
-    bool        cancelled = false;
-    bool        in_heap = false;
-    bool        precise_ = false;  // at(): heap, sub-tick precision
+    Context ctx{};  // ambient context captured at arm (§7.4)
+    TimerId id{};
+    bool cancelled = false;
+    bool in_heap = false;
+    bool precise_ = false;  // at(): heap, sub-tick precision
     std::size_t heap_idx = ~std::size_t(0);
 };
 
@@ -84,15 +84,15 @@ inline void glist_unlink(TimerNode* n) noexcept {
     n->group_prev = n->group_next = nullptr;
 }
 
-} // namespace detail
+}  // namespace detail
 
 // ---------------------------------------------------------------------------
 // TimerWheel
 // ---------------------------------------------------------------------------
 class TimerWheel {
-public:
+  public:
     static constexpr int kLevels = 4;
-    static constexpr int kSlots  = 256;
+    static constexpr int kSlots = 256;
 
     explicit TimerWheel(Nanos tick) : tick_(tick) {
         for (auto& lvl : buckets_)
@@ -113,11 +113,12 @@ public:
         return std::uint64_t(t.time_since_epoch().count() / tick_.count());
     }
 
-    bool fits(std::uint64_t expiry_tick, std::uint64_t now_tick) const noexcept {
+    bool fits(std::uint64_t expiry_tick,
+              std::uint64_t now_tick) const noexcept {
         if (expiry_tick <= now_tick) return true;
         std::uint64_t d = expiry_tick - now_tick;
         for (int l = 0; l < kLevels; ++l) d >>= 8;
-        return d == 0;   // d < 256^4
+        return d == 0;  // d < 256^4
     }
 
     // Insert a node already carrying expiry_tick. Caller guarantees it fits.
@@ -129,8 +130,8 @@ public:
         // effective tick to now_tick + 1. Cascade inserts bypass this
         // (see cascade): they run before the current slot drains, so a
         // node landing exactly on now_tick must use the current slot.
-        std::uint64_t et = n.expiry_tick > now_tick ? n.expiry_tick
-                                                    : now_tick + 1;
+        std::uint64_t et =
+            n.expiry_tick > now_tick ? n.expiry_tick : now_tick + 1;
         insert_node(n, et, now_tick);
     }
 
@@ -167,11 +168,14 @@ public:
 
     std::uint64_t now_tick() const noexcept { return now_tick_; }
     std::size_t size() const noexcept { return count_; }
-    void set_max_ticks_per_call(std::size_t n) noexcept { max_ticks_per_call_ = n; }
+    void set_max_ticks_per_call(std::size_t n) noexcept {
+        max_ticks_per_call_ = n;
+    }
 
-private:
+  private:
     void cascade(int level) noexcept {
-        TimerNode* s = &buckets_[level][(now_tick_ >> (8 * level)) & (kSlots - 1)];
+        TimerNode* s =
+            &buckets_[level][(now_tick_ >> (8 * level)) & (kSlots - 1)];
         // Move every node down to where its remaining distance belongs.
         std::vector<TimerNode*> tmp;
         for (TimerNode* n = s->bucket_next; n != s;) {
@@ -185,8 +189,8 @@ private:
             // Cascades run before the current slot drains, so a node
             // landing exactly on now_tick_ belongs in the current slot —
             // do not apply the overdue clamp used by public insert().
-            std::uint64_t et = n->expiry_tick > now_tick_ ? n->expiry_tick
-                                                          : now_tick_;
+            std::uint64_t et =
+                n->expiry_tick > now_tick_ ? n->expiry_tick : now_tick_;
             insert_node(*n, et, now_tick_);
         }
     }
@@ -195,7 +199,10 @@ private:
                      std::uint64_t now_tick) noexcept {
         std::uint64_t d = et - now_tick;
         int level = 0;
-        while (d >= kSlots) { d >>= 8; ++level; }
+        while (d >= kSlots) {
+            d >>= 8;
+            ++level;
+        }
         std::size_t slot = (et >> (8 * level)) & (kSlots - 1);
         detail::list_push_back(&buckets_[level][slot], &n);
         ++count_;
@@ -228,7 +235,7 @@ private:
 // Four-ary min-heap over TimerNode::expiry (precise / far deadlines).
 // ---------------------------------------------------------------------------
 class TimerHeap {
-public:
+  public:
     void push(TimerNode& n) noexcept {
         n.in_heap = true;
         n.heap_idx = heap_.size();
@@ -262,7 +269,7 @@ public:
         }
     }
 
-private:
+  private:
     static bool before(const TimerNode* a, const TimerNode* b) noexcept {
         return a->expiry < b->expiry;
     }
@@ -279,7 +286,8 @@ private:
     void sift_down(std::size_t i) noexcept {
         for (;;) {
             std::size_t best = i;
-            for (std::size_t c = 4 * i + 1; c <= 4 * i + 4 && c < heap_.size(); ++c)
+            for (std::size_t c = 4 * i + 1; c <= 4 * i + 4 && c < heap_.size();
+                 ++c)
                 if (before(heap_[c], heap_[best])) best = c;
             if (best == i) break;
             std::swap(heap_[i], heap_[best]);
@@ -297,9 +305,7 @@ private:
 // ---------------------------------------------------------------------------
 struct TimerGroupState {
     TimerNode sentinel{};
-    TimerGroupState() {
-        sentinel.group_prev = sentinel.group_next = &sentinel;
-    }
+    TimerGroupState() { sentinel.group_prev = sentinel.group_next = &sentinel; }
     void add(TimerNode& n) noexcept {
         n.group_prev = sentinel.group_prev;
         n.group_next = &sentinel;
@@ -309,4 +315,4 @@ struct TimerGroupState {
     bool empty() const noexcept { return sentinel.group_next == &sentinel; }
 };
 
-} // namespace afx
+}  // namespace afx

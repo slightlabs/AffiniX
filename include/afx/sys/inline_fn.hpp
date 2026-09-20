@@ -42,16 +42,17 @@ class InlineFn<R(A...), N> {
         return &ops;
     }
 
-public:
+  public:
     InlineFn() noexcept = default;
     InlineFn(std::nullptr_t) noexcept {}
 
     template <class F>
-        requires (!std::is_same_v<std::decay_t<F>, InlineFn> &&
-                  std::is_invocable_r_v<R, F&, A...>)
+        requires(!std::is_same_v<std::decay_t<F>, InlineFn> &&
+                 std::is_invocable_r_v<R, F&, A...>)
     InlineFn(F&& f) {
         using D = std::decay_t<F>;
-        if constexpr (sizeof(D) <= N && std::is_nothrow_move_constructible_v<D>) {
+        if constexpr (sizeof(D) <= N &&
+                      std::is_nothrow_move_constructible_v<D>) {
             new (buf_) D(std::forward<F>(f));
             ops_ = ops_for<D>();
             heap_ = false;
@@ -65,7 +66,10 @@ public:
 
     InlineFn(InlineFn&& o) noexcept { move_from(o); }
     InlineFn& operator=(InlineFn&& o) noexcept {
-        if (this != &o) { reset(); move_from(o); }
+        if (this != &o) {
+            reset();
+            move_from(o);
+        }
         return *this;
     }
     InlineFn(const InlineFn&) = delete;
@@ -95,9 +99,10 @@ public:
 
     bool heap_allocated() const noexcept { return heap_; }
 
-private:
+  private:
     void* ptr() noexcept {
-        return heap_ ? *reinterpret_cast<void**>(buf_) : static_cast<void*>(buf_);
+        return heap_ ? *reinterpret_cast<void**>(buf_)
+                     : static_cast<void*>(buf_);
     }
 
     void move_from(InlineFn& o) noexcept {
@@ -128,9 +133,11 @@ private:
         return &ops;
     }
 
-    alignas(std::max_align_t) unsigned char buf_[N > sizeof(void*) ? N : sizeof(void*)]{};
+    alignas(std::max_align_t) unsigned char buf_[N > sizeof(void*)
+                                                     ? N
+                                                     : sizeof(void*)]{};
     const Ops* ops_ = nullptr;
     bool heap_ = false;
 };
 
-} // namespace afx
+}  // namespace afx

@@ -38,7 +38,7 @@ TEST_CASE("IoBuffer prepend writes a header in front, no copy") {
 }
 
 TEST_CASE("IoBuffer prepend beyond headroom shifts data") {
-    IoBuffer b(256, 4);   // only 4 bytes of initial headroom
+    IoBuffer b(256, 4);  // only 4 bytes of initial headroom
     write_bytes(b, "payload");
     auto big = b.prepend(16);
     std::memset(big.data(), 0xAB, 16);

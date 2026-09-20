@@ -13,10 +13,10 @@
 namespace afx {
 
 class CoreSet {
-public:
+  public:
     CoreSet() = default;
 
-    static CoreSet range(int first, int last) {   // inclusive
+    static CoreSet range(int first, int last) {  // inclusive
         CoreSet s;
         for (int i = first; i <= last; ++i) s.add(i);
         return s;
@@ -26,12 +26,15 @@ public:
         for (int i : ids) s.add(i);
         return s;
     }
-    static CoreSet all() { CoreSet s; s.all_ = true; return s; }
+    static CoreSet all() {
+        CoreSet s;
+        s.all_ = true;
+        return s;
+    }
 
     void add(int cpu) {
         if (cpu < 0) return;
-        if (cpu >= int(bits_.size() * 64))
-            bits_.resize(cpu / 64 + 1, 0);
+        if (cpu >= int(bits_.size() * 64)) bits_.resize(cpu / 64 + 1, 0);
         bits_[cpu / 64] |= (std::uint64_t(1) << (cpu % 64));
     }
     bool contains(int cpu) const {
@@ -45,10 +48,12 @@ public:
             if (contains(i)) out.push_back(i);
         return out;
     }
-    std::size_t size() const { return unrestricted() ? ~std::size_t(0) : cpus().size(); }
+    std::size_t size() const {
+        return unrestricted() ? ~std::size_t(0) : cpus().size();
+    }
     bool empty() const { return !all_ && bits_.empty(); }
 
-private:
+  private:
     std::vector<std::uint64_t> bits_;
     bool all_ = false;
 };
@@ -57,8 +62,12 @@ private:
 // failures are reported, not swallowed.
 struct SchedPolicy {
     struct Other {};
-    struct Fifo { int prio; };
-    struct Rr   { int prio; };
+    struct Fifo {
+        int prio;
+    };
+    struct Rr {
+        int prio;
+    };
     std::variant<Other, Fifo, Rr> v = Other{};
 };
 
@@ -67,4 +76,4 @@ Result<void> apply_sched_this_thread(const SchedPolicy& p);
 // Cores this thread is currently allowed to run on (the cpuset).
 Result<CoreSet> allowed_cpus();
 
-} // namespace afx
+}  // namespace afx

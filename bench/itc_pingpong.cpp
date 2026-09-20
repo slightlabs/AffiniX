@@ -6,8 +6,8 @@
 #include <chrono>
 #include <thread>
 
-#include "bench_env.hpp"
 #include "afx/itc/mpsc_ring.hpp"
+#include "bench_env.hpp"
 
 using namespace afx;
 
@@ -18,7 +18,7 @@ int main() {
     {
         EventManager em(EventManagerConfig{.wait = WaitStrategy::Block});
         std::thread t([&] { em.run(); });
-        std::this_thread::sleep_for(5ms);   // let it reach the blocked wait
+        std::this_thread::sleep_for(5ms);  // let it reach the blocked wait
 
         MpscRing<std::uint64_t> reply(1024);
         std::atomic<std::uint64_t> seq{0};
@@ -26,11 +26,9 @@ int main() {
         auto b = afx::bench::make_bench();
         b.run("mailbox round-trip (post -> run -> reply)", [&] {
             std::uint64_t want = seq.fetch_add(1) + 1;
-            (void)em.post([&] {
-                (void)reply.try_push(want);
-            });
+            (void)em.post([&] { (void)reply.try_push(want); });
             std::uint64_t v = 0;
-            while (!reply.try_pop(v) || v != want) {}   // spin-drain reply
+            while (!reply.try_pop(v) || v != want) {}  // spin-drain reply
         });
         em.stop();
         t.join();

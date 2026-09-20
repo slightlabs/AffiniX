@@ -27,4 +27,4 @@ inline double model_scale() {
 #endif
 }
 
-} // namespace afx::test
+}  // namespace afx::test

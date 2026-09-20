@@ -38,7 +38,7 @@ std::vector<int> parse_cpu_list(const std::string& s) {
     return out;
 }
 
-} // namespace
+}  // namespace
 
 Topology Topology::detect(std::string_view sysfs_root) {
     Topology t{std::string(sysfs_root)};
@@ -49,13 +49,14 @@ Topology Topology::detect(std::string_view sysfs_root) {
         std::string name = e.path().filename().string();
         if (name.rfind("cpu", 0) != 0) continue;
         int id = -1;
-        auto r = std::from_chars(name.data() + 3, name.data() + name.size(), id);
+        auto r =
+            std::from_chars(name.data() + 3, name.data() + name.size(), id);
         if (r.ec != std::errc() || id < 0) continue;
 
         Core c;
         c.id = id;
         fs::path topo = e.path() / "topology";
-        c.package  = read_int(topo / "physical_package_id", 0);
+        c.package = read_int(topo / "physical_package_id", 0);
         c.physical = read_int(topo / "core_id", id);
         if (auto f = std::ifstream(topo / "thread_siblings_list"); f) {
             std::string line;
@@ -72,7 +73,8 @@ Topology Topology::detect(std::string_view sysfs_root) {
             std::string nn = ne.path().filename().string();
             if (nn.rfind("node", 0) != 0) continue;
             int nid = -1;
-            auto rr = std::from_chars(nn.data() + 4, nn.data() + nn.size(), nid);
+            auto rr =
+                std::from_chars(nn.data() + 4, nn.data() + nn.size(), nid);
             if (rr.ec != std::errc() || nid < 0) continue;
             for (auto& ce : fs::directory_iterator(ne.path(), ec)) {
                 if (ce.path().filename().string() == name) {
@@ -94,14 +96,13 @@ std::vector<int> Topology::physical_cores() const {
     std::vector<int> out;
     std::set<std::pair<int, int>> seen;
     for (auto& c : cores_)
-        if (seen.emplace(c.package, c.physical).second)
-            out.push_back(c.id);
+        if (seen.emplace(c.package, c.physical).second) out.push_back(c.id);
     return out;
 }
 
 std::optional<int> Topology::numa_node_of_nic(std::string_view ifname) const {
-    fs::path p = sysfs_root_ + "/class/net/" + std::string(ifname) +
-                 "/device/numa_node";
+    fs::path p =
+        sysfs_root_ + "/class/net/" + std::string(ifname) + "/device/numa_node";
     std::ifstream f(p);
     if (!f) return std::nullopt;
     int v;
@@ -109,4 +110,4 @@ std::optional<int> Topology::numa_node_of_nic(std::string_view ifname) const {
     return v >= 0 ? std::optional<int>(v) : std::nullopt;
 }
 
-} // namespace afx
+}  // namespace afx

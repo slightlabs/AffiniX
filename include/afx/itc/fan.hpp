@@ -16,24 +16,24 @@ namespace afx {
 struct HashByTag {};
 template <class T, class K>
 struct HashBy {
-    K T::* member;     // shard key is &T::member
+    K T::*member;  // shard key is &T::member
 };
 
 enum class FanMode : std::uint8_t { RoundRobin, Hash, Broadcast };
 
 template <class T>
 class Fan {
-public:
+  public:
     Fan(std::vector<Mailbox> mbs, FanMode mode = FanMode::RoundRobin)
         : mbs_(std::move(mbs)), mode_(mode) {}
 
     // Hash-by-key: all items with the same key land on the same shard.
     template <class K>
     Fan(std::vector<Mailbox> mbs, HashBy<T, K> k)
-        : mbs_(std::move(mbs)), mode_(FanMode::Hash),
-          key_fn_([m = k.member](const T& t) {
-              return std::hash<K>{}(t.*m);
-          }) {}
+        : mbs_(std::move(mbs)),
+          mode_(FanMode::Hash),
+          key_fn_([m = k.member](const T& t) { return std::hash<K>{}(t.*m); }) {
+    }
 
     // dispatch: the handler runs on the target EM with the item.
     template <class F>
@@ -53,23 +53,24 @@ public:
 
     std::size_t size() const noexcept { return mbs_.size(); }
 
-private:
+  private:
     std::size_t pick(const T& item) {
         switch (mode_) {
-        case FanMode::Hash:
-            if (key_fn_) return key_fn_(item) % mbs_.size();
-            [[fallthrough]];
-        case FanMode::Broadcast:
-        case FanMode::RoundRobin:
-        default:
-            return rr_.fetch_add(1, std::memory_order_relaxed) % mbs_.size();
+            case FanMode::Hash:
+                if (key_fn_) return key_fn_(item) % mbs_.size();
+                [[fallthrough]];
+            case FanMode::Broadcast:
+            case FanMode::RoundRobin:
+            default:
+                return rr_.fetch_add(1, std::memory_order_relaxed) %
+                       mbs_.size();
         }
     }
 
     std::vector<Mailbox> mbs_;
     FanMode mode_;
-    std::function<std::uint64_t(const T&)> key_fn_;   // config-time only
+    std::function<std::uint64_t(const T&)> key_fn_;  // config-time only
     std::atomic<std::uint64_t> rr_{0};
 };
 
-} // namespace afx
+}  // namespace afx

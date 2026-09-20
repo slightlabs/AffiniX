@@ -1,16 +1,16 @@
 #include "afx/backend/uring.hpp"
 
-#include <algorithm>
-#include <cerrno>
-#include <cstdlib>
-#include <cstring>
-#include <atomic>
 #include <linux/io_uring.h>
 #include <poll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
 
 #include "afx/net/sock_addr.hpp"
 #include "afx/sys/clock.hpp"
@@ -21,9 +21,9 @@ namespace {
 
 // Internal completion tags: kind byte 0xFF never collides with OpKind.
 constexpr std::uint8_t kInternalKind = 0xFF;
-constexpr std::uint64_t kWakeTag     = UserData::make(kInternalKind, 0, 0).raw;
-constexpr std::uint64_t kCancelTag   = UserData::make(kInternalKind, 0, 1).raw;
-constexpr std::uint64_t kRemoveTag   = UserData::make(kInternalKind, 0, 2).raw;
+constexpr std::uint64_t kWakeTag = UserData::make(kInternalKind, 0, 0).raw;
+constexpr std::uint64_t kCancelTag = UserData::make(kInternalKind, 0, 1).raw;
+constexpr std::uint64_t kRemoveTag = UserData::make(kInternalKind, 0, 2).raw;
 
 inline bool is_internal(std::uint64_t tag) noexcept {
     return (tag >> 56) == kInternalKind;
@@ -39,10 +39,12 @@ std::uint32_t to_poll(Interest i) noexcept {
 std::int32_t to_ready(std::int32_t res) noexcept {
     if (res < 0) return CompletionFlag::ReadyErr;
     std::int32_t m = 0;
-    if (res & (POLLIN | POLLRDNORM | POLLRDBAND | POLLPRI)) m |= CompletionFlag::ReadyRead;
-    if (res & (POLLOUT | POLLWRNORM | POLLWRBAND))          m |= CompletionFlag::ReadyWrite;
-    if (res & (POLLERR | POLLNVAL))                        m |= CompletionFlag::ReadyErr;
-    if (res & (POLLHUP | POLLRDHUP))                       m |= CompletionFlag::ReadyHangup;
+    if (res & (POLLIN | POLLRDNORM | POLLRDBAND | POLLPRI))
+        m |= CompletionFlag::ReadyRead;
+    if (res & (POLLOUT | POLLWRNORM | POLLWRBAND))
+        m |= CompletionFlag::ReadyWrite;
+    if (res & (POLLERR | POLLNVAL)) m |= CompletionFlag::ReadyErr;
+    if (res & (POLLHUP | POLLRDHUP)) m |= CompletionFlag::ReadyHangup;
     return m;
 }
 
@@ -50,7 +52,8 @@ inline int uring_setup(unsigned entries, io_uring_params* p) noexcept {
     return int(::syscall(SYS_io_uring_setup, entries, p));
 }
 inline int uring_enter(int fd, unsigned submit, unsigned min_complete,
-                       unsigned flags, const void* arg, std::size_t argsz) noexcept {
+                       unsigned flags, const void* arg,
+                       std::size_t argsz) noexcept {
     return int(::syscall(SYS_io_uring_enter, fd, submit, min_complete, flags,
                          arg, argsz));
 }
@@ -59,7 +62,7 @@ inline int uring_register(int fd, unsigned op, const void* arg,
     return int(::syscall(SYS_io_uring_register, fd, op, arg, nr));
 }
 
-} // namespace
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // construction / teardown
@@ -67,33 +70,53 @@ inline int uring_register(int fd, unsigned op, const void* arg,
 
 UringBackend::UringBackend() = default;
 
-UringBackend::~UringBackend() { teardown(); }
+UringBackend::~UringBackend() {
+    teardown();
+}
 
-UringBackend::UringBackend(UringBackend&& o) noexcept { *this = std::move(o); }
+UringBackend::UringBackend(UringBackend&& o) noexcept {
+    *this = std::move(o);
+}
 
 UringBackend& UringBackend::operator=(UringBackend&& o) noexcept {
     if (this == &o) return *this;
     teardown();
-    ring_fd_ = o.ring_fd_;         o.ring_fd_ = -1;
-    wake_fd_ = o.wake_fd_;         o.wake_fd_ = -1;
-    sq_head_ = o.sq_head_;   sq_tail_ = o.sq_tail_;   sq_mask_ = o.sq_mask_;
-    sq_entries_ = o.sq_entries_;   sq_array_ = o.sq_array_;   sqes_ = o.sqes_;
-    cq_head_ = o.cq_head_;   cq_tail_ = o.cq_tail_;   cq_mask_ = o.cq_mask_;
+    ring_fd_ = o.ring_fd_;
+    o.ring_fd_ = -1;
+    wake_fd_ = o.wake_fd_;
+    o.wake_fd_ = -1;
+    sq_head_ = o.sq_head_;
+    sq_tail_ = o.sq_tail_;
+    sq_mask_ = o.sq_mask_;
+    sq_entries_ = o.sq_entries_;
+    sq_array_ = o.sq_array_;
+    sqes_ = o.sqes_;
+    cq_head_ = o.cq_head_;
+    cq_tail_ = o.cq_tail_;
+    cq_mask_ = o.cq_mask_;
     cqes_ = o.cqes_;
     o.sq_head_ = o.sq_tail_ = o.sq_mask_ = o.sq_entries_ = nullptr;
-    o.sq_array_ = nullptr;   o.sqes_ = nullptr;
-    o.cq_head_ = o.cq_tail_ = o.cq_mask_ = nullptr;   o.cqes_ = nullptr;
-    sq_map_ = o.sq_map_;     sq_map_sz_ = o.sq_map_sz_;
-    cq_map_ = o.cq_map_;     cq_map_sz_ = o.cq_map_sz_;
-    sqes_map_ = o.sqes_map_; sqes_map_sz_ = o.sqes_map_sz_;
+    o.sq_array_ = nullptr;
+    o.sqes_ = nullptr;
+    o.cq_head_ = o.cq_tail_ = o.cq_mask_ = nullptr;
+    o.cqes_ = nullptr;
+    sq_map_ = o.sq_map_;
+    sq_map_sz_ = o.sq_map_sz_;
+    cq_map_ = o.cq_map_;
+    cq_map_sz_ = o.cq_map_sz_;
+    sqes_map_ = o.sqes_map_;
+    sqes_map_sz_ = o.sqes_map_sz_;
     o.sq_map_ = o.cq_map_ = o.sqes_map_ = nullptr;
-    pending_ = o.pending_;   o.pending_ = 0;
+    pending_ = o.pending_;
+    o.pending_ = 0;
     watch_ = std::move(o.watch_);
     swallow_ = std::move(o.swallow_);
     sendv_ = std::move(o.sendv_);
     connect_ = std::move(o.connect_);
-    pbuf_ = o.pbuf_;                 o.pbuf_ = nullptr;
-    pbuf_map_ = o.pbuf_map_;         o.pbuf_map_ = nullptr;
+    pbuf_ = o.pbuf_;
+    o.pbuf_ = nullptr;
+    pbuf_map_ = o.pbuf_map_;
+    o.pbuf_map_ = nullptr;
     pbuf_map_sz_ = o.pbuf_map_sz_;
     pbuf_backing_ = std::move(o.pbuf_backing_);
     pbuf_mask_ = o.pbuf_mask_;
@@ -113,13 +136,19 @@ Result<UringCaps> UringBackend::probe() {
     int fd = uring_setup(8, &p);
     if (fd < 0) return last_errno();
 
-    std::size_t sz = sizeof(io_uring_probe) +
-                     IORING_OP_LAST * sizeof(io_uring_probe_op);
+    std::size_t sz =
+        sizeof(io_uring_probe) + IORING_OP_LAST * sizeof(io_uring_probe_op);
     auto* pr = static_cast<io_uring_probe*>(std::calloc(1, sz));
-    if (!pr) { ::close(fd); return errno_error(ENOMEM); }
+    if (!pr) {
+        ::close(fd);
+        return errno_error(ENOMEM);
+    }
     int r = uring_register(fd, IORING_REGISTER_PROBE, pr, IORING_OP_LAST);
     ::close(fd);
-    if (r < 0) { std::free(pr); return last_errno(); }
+    if (r < 0) {
+        std::free(pr);
+        return last_errno();
+    }
 
     UringCaps caps;
     for (unsigned i = 0; i < pr->ops_len && i < IORING_OP_LAST; ++i)
@@ -134,8 +163,10 @@ int UringBackend::init(const UringConfig& cfg) noexcept {
     ring_fd_ = uring_setup(cfg.sq_entries, &p);
     if (ring_fd_ < 0) return -errno;
 
-    std::size_t sq_ring_sz = p.sq_off.array + p.sq_entries * sizeof(std::uint32_t);
-    std::size_t cq_ring_sz = p.cq_off.cqes + p.cq_entries * sizeof(io_uring_cqe);
+    std::size_t sq_ring_sz =
+        p.sq_off.array + p.sq_entries * sizeof(std::uint32_t);
+    std::size_t cq_ring_sz =
+        p.cq_off.cqes + p.cq_entries * sizeof(io_uring_cqe);
     std::size_t map_sz = sq_ring_sz;
     if (p.features & IORING_FEAT_SINGLE_MMAP)
         map_sz = std::max(sq_ring_sz, cq_ring_sz);
@@ -143,38 +174,49 @@ int UringBackend::init(const UringConfig& cfg) noexcept {
     sq_map_sz_ = map_sz;
     sq_map_ = ::mmap(nullptr, sq_map_sz_, PROT_READ | PROT_WRITE,
                      MAP_SHARED | MAP_POPULATE, ring_fd_, IORING_OFF_SQ_RING);
-    if (sq_map_ == MAP_FAILED) { sq_map_ = nullptr; goto fail; }
+    if (sq_map_ == MAP_FAILED) {
+        sq_map_ = nullptr;
+        goto fail;
+    }
 
     if (p.features & IORING_FEAT_SINGLE_MMAP) {
         cq_map_ = sq_map_;
         cq_map_sz_ = sq_map_sz_;
     } else {
         cq_map_sz_ = cq_ring_sz;
-        cq_map_ = ::mmap(nullptr, cq_map_sz_, PROT_READ | PROT_WRITE,
-                         MAP_SHARED | MAP_POPULATE, ring_fd_, IORING_OFF_CQ_RING);
-        if (cq_map_ == MAP_FAILED) { cq_map_ = nullptr; goto fail; }
+        cq_map_ =
+            ::mmap(nullptr, cq_map_sz_, PROT_READ | PROT_WRITE,
+                   MAP_SHARED | MAP_POPULATE, ring_fd_, IORING_OFF_CQ_RING);
+        if (cq_map_ == MAP_FAILED) {
+            cq_map_ = nullptr;
+            goto fail;
+        }
     }
 
     sqes_map_sz_ = p.sq_entries * sizeof(io_uring_sqe);
     sqes_map_ = ::mmap(nullptr, sqes_map_sz_, PROT_READ | PROT_WRITE,
                        MAP_SHARED | MAP_POPULATE, ring_fd_, IORING_OFF_SQES);
-    if (sqes_map_ == MAP_FAILED) { sqes_map_ = nullptr; goto fail; }
+    if (sqes_map_ == MAP_FAILED) {
+        sqes_map_ = nullptr;
+        goto fail;
+    }
 
     {
         auto* base = static_cast<char*>(sq_map_);
-        sq_head_    = reinterpret_cast<std::uint32_t*>(base + p.sq_off.head);
-        sq_tail_    = reinterpret_cast<std::uint32_t*>(base + p.sq_off.tail);
-        sq_mask_    = reinterpret_cast<std::uint32_t*>(base + p.sq_off.ring_mask);
-        sq_entries_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.ring_entries);
-        sq_array_   = reinterpret_cast<std::uint32_t*>(base + p.sq_off.array);
-        sqes_       = static_cast<io_uring_sqe*>(sqes_map_);
+        sq_head_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.head);
+        sq_tail_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.tail);
+        sq_mask_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.ring_mask);
+        sq_entries_ =
+            reinterpret_cast<std::uint32_t*>(base + p.sq_off.ring_entries);
+        sq_array_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.array);
+        sqes_ = static_cast<io_uring_sqe*>(sqes_map_);
     }
     {
         auto* base = static_cast<char*>(cq_map_);
         cq_head_ = reinterpret_cast<std::uint32_t*>(base + p.cq_off.head);
         cq_tail_ = reinterpret_cast<std::uint32_t*>(base + p.cq_off.tail);
         cq_mask_ = reinterpret_cast<std::uint32_t*>(base + p.cq_off.ring_mask);
-        cqes_    = reinterpret_cast<io_uring_cqe*>(base + p.cq_off.cqes);
+        cqes_ = reinterpret_cast<io_uring_cqe*>(base + p.cq_off.cqes);
     }
 
     wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -194,12 +236,11 @@ int UringBackend::init(const UringConfig& cfg) noexcept {
     if (cfg.use_pbuf_ring && register_pbuf_ring(cfg) != 0) goto fail;
     return 0;
 
-fail:
-    {
-        int e = errno ? errno : EINVAL;
-        teardown();
-        return -e;
-    }
+fail: {
+    int e = errno ? errno : EINVAL;
+    teardown();
+    return -e;
+}
 }
 
 int UringBackend::register_pbuf_ring(const UringConfig& cfg) noexcept {
@@ -209,13 +250,16 @@ int UringBackend::register_pbuf_ring(const UringConfig& cfg) noexcept {
     pbuf_map_sz_ = cfg.pbuf_entries * sizeof(io_uring_buf);
     pbuf_map_ = ::mmap(nullptr, pbuf_map_sz_, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (pbuf_map_ == MAP_FAILED) { pbuf_map_ = nullptr; return -errno; }
+    if (pbuf_map_ == MAP_FAILED) {
+        pbuf_map_ = nullptr;
+        return -errno;
+    }
     pbuf_ = static_cast<io_uring_buf_ring*>(pbuf_map_);
 
     io_uring_buf_reg reg{};
-    reg.ring_addr    = std::uint64_t(pbuf_map_);
+    reg.ring_addr = std::uint64_t(pbuf_map_);
     reg.ring_entries = cfg.pbuf_entries;
-    reg.bgid         = cfg.pbuf_bgid;
+    reg.bgid = cfg.pbuf_bgid;
     if (uring_register(ring_fd_, IORING_REGISTER_PBUF_RING, &reg, 1) < 0)
         return -errno;
 
@@ -230,9 +274,9 @@ int UringBackend::register_pbuf_ring(const UringConfig& cfg) noexcept {
 void UringBackend::provide_buffer(std::uint16_t bid) noexcept {
     std::uint16_t tail = pbuf_->tail;
     auto* buf = &pbuf_->bufs[tail & pbuf_mask_];
-    buf->addr = std::uint64_t(
-        pbuf_backing_.data() +
-        std::size_t(bid) * (pbuf_backing_.size() / (pbuf_mask_ + 1)));
+    buf->addr = std::uint64_t(pbuf_backing_.data() +
+                              std::size_t(bid) *
+                                  (pbuf_backing_.size() / (pbuf_mask_ + 1)));
     buf->len = std::uint32_t(pbuf_backing_.size() / (pbuf_mask_ + 1));
     buf->bid = bid;
     __atomic_store_n(&pbuf_->tail, std::uint16_t(tail + 1), __ATOMIC_RELEASE);
@@ -248,9 +292,12 @@ void UringBackend::teardown() noexcept {
         ::close(ring_fd_);
         ring_fd_ = -1;
     }
-    if (wake_fd_ >= 0) { ::close(wake_fd_); wake_fd_ = -1; }
+    if (wake_fd_ >= 0) {
+        ::close(wake_fd_);
+        wake_fd_ = -1;
+    }
     bool shared = (cq_map_ == sq_map_);
-    if (sq_map_)   ::munmap(sq_map_, sq_map_sz_);
+    if (sq_map_) ::munmap(sq_map_, sq_map_sz_);
     if (cq_map_ && !shared) ::munmap(cq_map_, cq_map_sz_);
     if (sqes_map_) ::munmap(sqes_map_, sqes_map_sz_);
     if (pbuf_map_) ::munmap(pbuf_map_, pbuf_map_sz_);
@@ -304,8 +351,7 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
             }
             continue;
         }
-        if (cqe.res == -ECANCELED && swallow_.erase(cqe.user_data))
-            continue;
+        if (cqe.res == -ECANCELED && swallow_.erase(cqe.user_data)) continue;
 
         Completion& c = out[n++];
         c = Completion{};
@@ -314,51 +360,53 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
         c.stamps.tsc = rdtsc();
 
         switch (c.user.kind()) {
-        case std::uint8_t(OpKind::Watch):
-            c.result = to_ready(cqe.res);
-            break;
-        case std::uint8_t(OpKind::Send):
-            sendv_.erase(cqe.user_data);
-            c.result = cqe.res;
-            break;
-        case std::uint8_t(OpKind::Connect):
-            connect_.erase(cqe.user_data);
-            c.result = cqe.res;
-            break;
-        case std::uint8_t(OpKind::Recv): {
-            auto it = recv_dst_.find(cqe.user_data);
-            if (it != recv_dst_.end()) {
-                // Provided-buffer mode: copy into the caller's span and
-                // hand the buffer back to the ring. The buffer must be
-                // re-provided even on error completions (e.g. -ECANCELED)
-                // or the ring slowly drains empty.
-                if (cqe.flags & IORING_CQE_F_BUFFER) {
-                    std::uint16_t bid = cqe.flags >> IORING_CQE_BUFFER_SHIFT;
-                    std::size_t buf_sz = pbuf_backing_.size() / (pbuf_mask_ + 1);
-                    if (cqe.res > 0) {
-                        std::size_t ncp =
-                            std::min<std::size_t>(cqe.res, it->second.size());
-                        std::memcpy(it->second.data(),
-                                    pbuf_backing_.data() +
-                                        std::size_t(bid) * buf_sz,
-                                    ncp);
-                        c.result = std::int32_t(ncp);
+            case std::uint8_t(OpKind::Watch):
+                c.result = to_ready(cqe.res);
+                break;
+            case std::uint8_t(OpKind::Send):
+                sendv_.erase(cqe.user_data);
+                c.result = cqe.res;
+                break;
+            case std::uint8_t(OpKind::Connect):
+                connect_.erase(cqe.user_data);
+                c.result = cqe.res;
+                break;
+            case std::uint8_t(OpKind::Recv): {
+                auto it = recv_dst_.find(cqe.user_data);
+                if (it != recv_dst_.end()) {
+                    // Provided-buffer mode: copy into the caller's span and
+                    // hand the buffer back to the ring. The buffer must be
+                    // re-provided even on error completions (e.g. -ECANCELED)
+                    // or the ring slowly drains empty.
+                    if (cqe.flags & IORING_CQE_F_BUFFER) {
+                        std::uint16_t bid =
+                            cqe.flags >> IORING_CQE_BUFFER_SHIFT;
+                        std::size_t buf_sz =
+                            pbuf_backing_.size() / (pbuf_mask_ + 1);
+                        if (cqe.res > 0) {
+                            std::size_t ncp = std::min<std::size_t>(
+                                cqe.res, it->second.size());
+                            std::memcpy(it->second.data(),
+                                        pbuf_backing_.data() +
+                                            std::size_t(bid) * buf_sz,
+                                        ncp);
+                            c.result = std::int32_t(ncp);
+                        } else {
+                            c.result = cqe.res;
+                        }
+                        provide_buffer(bid);
                     } else {
                         c.result = cqe.res;
                     }
-                    provide_buffer(bid);
+                    recv_dst_.erase(it);
                 } else {
                     c.result = cqe.res;
                 }
-                recv_dst_.erase(it);
-            } else {
-                c.result = cqe.res;
+                break;
             }
-            break;
-        }
-        default:
-            c.result = cqe.res;
-            break;
+            default:
+                c.result = cqe.res;
+                break;
         }
     }
     __atomic_store_n(cq_head_, head, __ATOMIC_RELEASE);
@@ -552,7 +600,7 @@ Result<void> UringBackend::submit_connect(UserData u, int fd,
     s->opcode = IORING_OP_CONNECT;
     s->fd = fd;
     s->addr = reinterpret_cast<std::uint64_t>(&ctx.ss);
-    s->off = ctx.len;   // addrlen travels in the off/addr2 slot
+    s->off = ctx.len;  // addrlen travels in the off/addr2 slot
     s->user_data = u.raw;
     return {};
 }
@@ -588,8 +636,8 @@ int UringBackend::wait(std::span<Completion> out, Nanos timeout) {
             io_uring_getevents_arg arg{};
             arg.ts = std::uint64_t(&ts);
             uring_enter(ring_fd_, sub, 1,
-                        IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG,
-                        &arg, sizeof(arg));
+                        IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG, &arg,
+                        sizeof(arg));
         } else {
             uring_enter(ring_fd_, sub, 0, 0, nullptr, 0);
         }
@@ -602,7 +650,7 @@ int UringBackend::wait(std::span<Completion> out, Nanos timeout) {
 void UringBackend::wake() {
     std::uint64_t one = 1;
     ssize_t r = ::write(wake_fd_, &one, sizeof(one));
-    (void)r;   // EAGAIN: counter saturated → a wake is already pending
+    (void)r;  // EAGAIN: counter saturated → a wake is already pending
 }
 
 // ---------------------------------------------------------------------------
@@ -615,13 +663,16 @@ AutoBackend::AutoBackend() {
     bool ok = false;
     if (auto caps = UringBackend::probe()) {
         constexpr std::uint8_t required[] = {
-            IORING_OP_POLL_ADD, IORING_OP_POLL_REMOVE, IORING_OP_SENDMSG,
-            IORING_OP_RECV,     IORING_OP_SEND,        IORING_OP_ACCEPT,
+            IORING_OP_POLL_ADD,     IORING_OP_POLL_REMOVE, IORING_OP_SENDMSG,
+            IORING_OP_RECV,         IORING_OP_SEND,        IORING_OP_ACCEPT,
             IORING_OP_ASYNC_CANCEL, IORING_OP_CONNECT,
         };
         ok = true;
         for (std::uint8_t op : required)
-            if (!caps->supports(op)) { ok = false; break; }
+            if (!caps->supports(op)) {
+                ok = false;
+                break;
+            }
     }
     if (ok) {
         if (auto b = UringBackend::create()) {
@@ -630,7 +681,7 @@ AutoBackend::AutoBackend() {
             return;
         }
     }
-    kind_ = BackendKind::Epoll;   // variant already holds a default EpollBackend
+    kind_ = BackendKind::Epoll;  // variant already holds a default EpollBackend
 }
 
 Result<void> AutoBackend::attach(int fd, Interest i, UserData u) {
@@ -643,21 +694,26 @@ Result<void> AutoBackend::detach(int fd) {
     return std::visit([&](auto& b) { return b.detach(fd); }, impl_);
 }
 Result<void> AutoBackend::submit_recv(UserData u, int fd, MutByteSpan buf) {
-    return std::visit([&](auto& b) { return b.submit_recv(u, fd, buf); }, impl_);
+    return std::visit([&](auto& b) { return b.submit_recv(u, fd, buf); },
+                      impl_);
 }
 Result<void> AutoBackend::submit_send(UserData u, int fd, ByteSpan data) {
-    return std::visit([&](auto& b) { return b.submit_send(u, fd, data); }, impl_);
+    return std::visit([&](auto& b) { return b.submit_send(u, fd, data); },
+                      impl_);
 }
 Result<void> AutoBackend::submit_sendv(UserData u, int fd,
                                        std::span<const ByteSpan> iov) {
-    return std::visit([&](auto& b) { return b.submit_sendv(u, fd, iov); }, impl_);
+    return std::visit([&](auto& b) { return b.submit_sendv(u, fd, iov); },
+                      impl_);
 }
 Result<void> AutoBackend::submit_accept(UserData u, int listen_fd) {
-    return std::visit([&](auto& b) { return b.submit_accept(u, listen_fd); }, impl_);
+    return std::visit([&](auto& b) { return b.submit_accept(u, listen_fd); },
+                      impl_);
 }
 Result<void> AutoBackend::submit_connect(UserData u, int fd,
                                          const SockAddr& addr) {
-    return std::visit([&](auto& b) { return b.submit_connect(u, fd, addr); }, impl_);
+    return std::visit([&](auto& b) { return b.submit_connect(u, fd, addr); },
+                      impl_);
 }
 Result<void> AutoBackend::cancel(UserData u) {
     return std::visit([&](auto& b) { return b.cancel(u); }, impl_);
@@ -672,4 +728,4 @@ int AutoBackend::wake_fd() const noexcept {
     return std::visit([](auto& b) { return b.wake_fd(); }, impl_);
 }
 
-} // namespace afx
+}  // namespace afx

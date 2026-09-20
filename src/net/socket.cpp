@@ -1,11 +1,11 @@
 #include "afx/net/socket.hpp"
 
-#include <cerrno>
-#include <cstring>
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstring>
 
 namespace afx::sock {
 
@@ -45,13 +45,14 @@ Result<void> apply(int fd, const SocketOptions& o) {
         if (auto r = set(SOL_SOCKET, SO_KEEPALIVE, 1); !r) return r;
         if (o.keepalive_idle.count())
             if (auto r = set(IPPROTO_TCP, TCP_KEEPIDLE,
-                             int(o.keepalive_idle.count() / 1'000'000'000)); !r)
+                             int(o.keepalive_idle.count() / 1'000'000'000));
+                !r)
                 return r;
     }
 #ifdef AFX_WITH_TIMESTAMPING
     if (o.timestamping) {
-        int flags = SOF_TIMESTAMPING_RX_HARDWARE | SOF_TIMESTAMPING_RX_SOFTWARE |
-                    SOF_TIMESTAMPING_SOFTWARE;
+        int flags = SOF_TIMESTAMPING_RX_HARDWARE |
+                    SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE;
         if (auto r = set(SOL_SOCKET, SO_TIMESTAMPING, flags); !r) return r;
     }
 #endif
@@ -89,4 +90,4 @@ Result<SockAddr> peer_addr(int fd) {
     return a;
 }
 
-} // namespace afx::sock
+}  // namespace afx::sock

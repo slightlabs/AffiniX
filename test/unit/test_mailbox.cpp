@@ -16,21 +16,21 @@ TEST_CASE("Mailbox post/post_batch deliver in order") {
     std::vector<int> got;
     for (int i = 0; i < 5; ++i) mb.post([&, i] { got.push_back(i); });
     std::vector<Task> batch;
-    for (int i = 5; i < 8; ++i) batch.emplace_back([&, i] { got.push_back(i); });
+    for (int i = 5; i < 8; ++i)
+        batch.emplace_back([&, i] { got.push_back(i); });
     CHECK(mb.post_batch(batch) == 3);
     env.em.poll_once();
     CHECK(got == std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7});
 }
 
 TEST_CASE("Mailbox bounded: Fail policy reports Full") {
-    TestEnv env(EventManagerConfig{.wait = WaitStrategy::Spin,
-                                   .mailbox_capacity = 4});
+    TestEnv env(
+        EventManagerConfig{.wait = WaitStrategy::Spin, .mailbox_capacity = 4});
     Mailbox mb = env.em.mailbox();
-    for (int i = 0; i < 4; ++i)
-        CHECK(mb.post([] {}) == PostResult::Ok);
+    for (int i = 0; i < 4; ++i) CHECK(mb.post([] {}) == PostResult::Ok);
     CHECK(mb.post([] {}) == PostResult::Full);
     env.em.poll_once();
-    CHECK(mb.post([] {}) == PostResult::Ok);   // space freed by drain
+    CHECK(mb.post([] {}) == PostResult::Ok);  // space freed by drain
 }
 
 TEST_CASE("post_and_reply round-trips a result") {
@@ -39,7 +39,7 @@ TEST_CASE("post_and_reply round-trips a result") {
     int reply = 0;
     CHECK(mb.post_and_reply([] { return 40 + 2; }, mb,
                             [&](int v) { reply = v; }) == PostResult::Ok);
-    env.em.poll_once();   // work runs; reply lands in the same drain
+    env.em.poll_once();  // work runs; reply lands in the same drain
     CHECK(reply == 42);
 }
 
@@ -52,9 +52,7 @@ TEST_CASE("post_and_reply preserves the caller's context") {
     env.em.defer([&] {
         auto scope = env.em.with_context(c);
         mb.post_and_reply([] { return 7; }, mb,
-                          [&](int) {
-                              seen = detail::ambient_context().trace;
-                          });
+                          [&](int) { seen = detail::ambient_context().trace; });
     });
     env.em.poll_once();
     env.em.poll_once();
@@ -78,8 +76,7 @@ TEST_CASE("Mailbox arm/block: post wakes a blocked EM") {
     for (int i = 0; i < 32; ++i) {
         em.mailbox().post([&] { ++ran; });
     }
-    for (int i = 0; i < 1000 && ran < 32; ++i)
-        std::this_thread::sleep_for(1ms);
+    for (int i = 0; i < 1000 && ran < 32; ++i) std::this_thread::sleep_for(1ms);
     em.stop();
     t.join();
     CHECK(ran == 32);

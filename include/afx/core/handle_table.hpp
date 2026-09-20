@@ -29,9 +29,9 @@ struct TimerIdTag;
 struct IoIdTag;
 struct TimerGroupTag;
 
-using ConnId       = Handle<ConnIdTag>;
-using TimerId      = Handle<TimerIdTag>;
-using IoId         = Handle<IoIdTag>;
+using ConnId = Handle<ConnIdTag>;
+using TimerId = Handle<TimerIdTag>;
+using IoId = Handle<IoIdTag>;
 using TimerGroupId = Handle<TimerGroupTag>;
 
 // Design doc names the wheel-side field `slot`; keep idx internally.
@@ -45,7 +45,7 @@ class HandleTable {
         alignas(T) unsigned char storage[sizeof(T)];
     };
 
-public:
+  public:
     HandleTable() = default;
     // `reserve` is accepted for API compatibility but is a no-op: slots_ is a
     // deque precisely so that growth never moves existing elements (see the
@@ -93,7 +93,7 @@ public:
         p->~T();
         s.alive = false;
         --live_;
-        ++s.gen;                       // stale handles fail gen check at once
+        ++s.gen;  // stale handles fail gen check at once
         if (s.gen == 0) s.gen = 1;
         deferred_.push_back(h.idx);
     }
@@ -107,7 +107,8 @@ public:
     std::size_t capacity() const noexcept { return slots_.size(); }
 
     // Iterate live objects; cb(T&, HandleT).
-    template <class F> void for_each(F&& cb) {
+    template <class F>
+    void for_each(F&& cb) {
         for (std::uint32_t i = 0; i < slots_.size(); ++i) {
             Slot& s = slots_[i];
             if (s.alive)
@@ -123,7 +124,7 @@ public:
         live_ = 0;
     }
 
-private:
+  private:
     // A deque, not a vector: growing it never reallocates or moves existing
     // elements, so a T* returned by get()/emplace() stays valid for the life
     // of the slot even as the table grows. Code elsewhere (e.g. the timer
@@ -137,4 +138,4 @@ private:
     std::size_t live_ = 0;
 };
 
-} // namespace afx
+}  // namespace afx

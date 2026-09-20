@@ -28,8 +28,8 @@ enum class OverflowPolicy : std::uint8_t {
 enum class PostResult : std::uint8_t { Ok, Full, Closed };
 
 struct PostedItem {
-    Task      fn;
-    Context   ctx;
+    Task fn;
+    Context ctx;
     std::uint64_t enq_tsc = 0;
 };
 
@@ -38,8 +38,7 @@ enum class MailboxState : std::uint8_t { Running = 0, Blocked = 1 };
 // The shared state. Owned by an EventManager; Mailboxes hold a shared_ptr so
 // posting to a dead EM degrades to PostResult::Closed, never a dangling write.
 struct MailboxImpl {
-    explicit MailboxImpl(std::size_t ring_capacity)
-        : ring(ring_capacity) {}
+    explicit MailboxImpl(std::size_t ring_capacity) : ring(ring_capacity) {}
 
     MpscRing<PostedItem> ring;
     std::atomic<MailboxState> state{MailboxState::Running};
@@ -56,9 +55,10 @@ struct MailboxImpl {
 };
 
 class Mailbox {
-public:
+  public:
     Mailbox() = default;
-    explicit Mailbox(std::shared_ptr<MailboxImpl> impl) : impl_(std::move(impl)) {}
+    explicit Mailbox(std::shared_ptr<MailboxImpl> impl)
+        : impl_(std::move(impl)) {}
 
     bool valid() const noexcept { return impl_ != nullptr; }
 
@@ -90,7 +90,8 @@ public:
     // work() runs on this mailbox's EM and returns R; the reply is posted
     // back to `reply_to` and delivered to `on_reply` there.
     template <class F, class Cb>
-    PostResult post_and_reply(F&& work, const Mailbox& reply_to, Cb&& on_reply) const {
+    PostResult post_and_reply(F&& work, const Mailbox& reply_to,
+                              Cb&& on_reply) const {
         Context ctx = detail::ambient_context();
         return post_with_ctx(
             [w = std::forward<F>(work), reply_to, ctx,
@@ -106,10 +107,11 @@ public:
     }
 
     std::size_t size_approx() const noexcept {
-        return impl_ ? impl_->ring.capacity() : 0;   // capacity; depth is EM-side
+        return impl_ ? impl_->ring.capacity()
+                     : 0;  // capacity; depth is EM-side
     }
 
-private:
+  private:
     PostResult push_one(PostedItem&& it) const {
         for (;;) {
             if (impl_->ring.try_push(std::move(it))) {
@@ -119,14 +121,16 @@ private:
             }
             impl_->full.fetch_add(1, std::memory_order_relaxed);
             switch (impl_->overflow) {
-            case OverflowPolicy::Fail:      return PostResult::Full;
-            case OverflowPolicy::Abort:     std::abort();
-            case OverflowPolicy::SpinRetry:
-                if (impl_->dead.load(std::memory_order_acquire))
-                    return PostResult::Closed;
-                // brief pause, then retry
-                for (int i = 0; i < 64; ++i) {}
-                continue;
+                case OverflowPolicy::Fail:
+                    return PostResult::Full;
+                case OverflowPolicy::Abort:
+                    std::abort();
+                case OverflowPolicy::SpinRetry:
+                    if (impl_->dead.load(std::memory_order_acquire))
+                        return PostResult::Closed;
+                    // brief pause, then retry
+                    for (int i = 0; i < 64; ++i) {}
+                    continue;
             }
         }
     }
@@ -135,7 +139,8 @@ private:
     // Blocked with seq_cst, our push happens-before its re-check of the ring,
     // so either it sees the item or we signal — never both lost.
     void after_push() const {
-        if (impl_->state.load(std::memory_order_seq_cst) == MailboxState::Blocked)
+        if (impl_->state.load(std::memory_order_seq_cst) ==
+            MailboxState::Blocked)
             if (impl_->wake_fn) impl_->wake_fn(impl_->wake_ctx);
     }
 
@@ -149,8 +154,9 @@ private:
 
     std::shared_ptr<MailboxImpl> impl_;
 
-    friend class EventManagerAccess;   // EM drains via impl_
-    template <class, class> friend class BasicEventManager;
+    friend class EventManagerAccess;  // EM drains via impl_
+    template <class, class>
+    friend class BasicEventManager;
 };
 
-} // namespace afx
+}  // namespace afx

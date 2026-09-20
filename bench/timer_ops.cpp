@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "bench_env.hpp"
 #include "../test/test_env.hpp"
+#include "bench_env.hpp"
 
 using namespace afx;
 
@@ -29,9 +29,8 @@ int main() {
         constexpr int kN = 10000;
         auto b = afx::bench::make_bench();
         b.batch(kN).run("timer fire storm (per fire)", [&] {
-            for (int i = 0; i < kN; ++i)
-                env.em.after(1ms, [](TimerCtx) {});
-            env.advance(1ms);            // one expiry-stage pass fires all
+            for (int i = 0; i < kN; ++i) env.em.after(1ms, [](TimerCtx) {});
+            env.advance(1ms);  // one expiry-stage pass fires all
         });
     }
 
@@ -42,8 +41,7 @@ int main() {
         constexpr int kN = 1024;
         b.batch(kN).run("cancel_group (per member)", [&] {
             TimerGroup g = env.em.make_timer_group();
-            for (int i = 0; i < kN; ++i)
-                env.em.after(1h, [](TimerCtx) {}, g);
+            for (int i = 0; i < kN; ++i) env.em.after(1h, [](TimerCtx) {}, g);
             env.em.cancel_group(g);
             env.pump();
         });

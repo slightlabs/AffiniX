@@ -1,11 +1,11 @@
 #include "afx/backend/epoll.hpp"
 
-#include <cerrno>
-#include <cstring>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstring>
 
 #include "afx/net/sock_addr.hpp"
 #include "afx/sys/clock.hpp"
@@ -21,14 +21,14 @@ std::uint32_t to_epoll(Interest i) noexcept {
     if (has(i, Interest::Writable)) e |= EPOLLOUT;
     return e;
 }
-} // namespace
+}  // namespace
 
 EpollBackend::EpollBackend() {
     epfd_ = ::epoll_create1(EPOLL_CLOEXEC);
     wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (epfd_ >= 0 && wake_fd_ >= 0) {
         epoll_event ev{};
-        ev.events = EPOLLIN;   // level-triggered: any pending wake counts once
+        ev.events = EPOLLIN;  // level-triggered: any pending wake counts once
         ev.data.fd = wake_fd_;
         ::epoll_ctl(epfd_, EPOLL_CTL_ADD, wake_fd_, &ev);
     }
@@ -36,7 +36,7 @@ EpollBackend::EpollBackend() {
 
 EpollBackend::~EpollBackend() {
     if (wake_fd_ >= 0) ::close(wake_fd_);
-    if (epfd_ >= 0)    ::close(epfd_);
+    if (epfd_ >= 0) ::close(epfd_);
 }
 
 // ---------------------------------------------------------------------------
@@ -64,8 +64,7 @@ Result<void> EpollBackend::modify(int fd, Interest i, UserData u) {
 Result<void> EpollBackend::detach(int fd) {
     auto it = fds_.find(fd);
     if (it == fds_.end()) return {};
-    if (it->second.registered)
-        ::epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr);
+    if (it->second.registered) ::epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr);
     fds_.erase(it);
     return {};
 }
@@ -137,7 +136,10 @@ Result<void> EpollBackend::submit_sendv(UserData u, int fd,
     SendReq req{u, std::vector<std::byte>(total - sent), 0};
     std::size_t wpos = 0, skip = sent;
     for (auto b : iov) {
-        if (skip >= b.size()) { skip -= b.size(); continue; }
+        if (skip >= b.size()) {
+            skip -= b.size();
+            continue;
+        }
         std::size_t take = b.size() - skip;
         std::memcpy(req.bytes.data() + wpos, b.data() + skip, take);
         wpos += take;
@@ -196,7 +198,8 @@ Result<void> EpollBackend::cancel(UserData u) {
                 queue_completion(u, -ECANCELED);
                 it = s.sendq.erase(it);
                 found = true;
-            } else ++it;
+            } else
+                ++it;
         }
         if (s.accept_armed && s.accept_ud == u) {
             s.accept_armed = false;
@@ -260,15 +263,19 @@ int EpollBackend::wait(std::span<Completion> out, Nanos timeout) {
         }
         auto it = fds_.find(fd);
         if (it == fds_.end()) continue;
-        if (n < int(out.size())) dispatch_event(fd, it->second, ev, out, n);
-        else pending_events_.emplace_back(fd, ev);
+        if (n < int(out.size()))
+            dispatch_event(fd, it->second, ev, out, n);
+        else
+            pending_events_.emplace_back(fd, ev);
     }
     return n;
 }
 
 void EpollBackend::wake() {
     std::uint64_t one = 1;
-    if (::write(wake_fd_, &one, sizeof(one)) < 0) { /* full: a wake is already pending */ }
+    if (::write(wake_fd_, &one, sizeof(one)) <
+        0) { /* full: a wake is already pending */
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -279,8 +286,7 @@ Result<void> EpollBackend::ensure_registered(FdState& s, int fd) {
     epoll_event ev{};
     ev.events = EPOLLET | EPOLLRDHUP;
     ev.data.fd = fd;
-    if (::epoll_ctl(epfd_, EPOLL_CTL_ADD, fd, &ev) < 0)
-        return last_errno();
+    if (::epoll_ctl(epfd_, EPOLL_CTL_ADD, fd, &ev) < 0) return last_errno();
     s.registered = true;
     return {};
 }
@@ -306,8 +312,8 @@ void EpollBackend::queue_completion(UserData u, std::int32_t res,
     ready_.push_back(c);
 }
 
-void EpollBackend::on_readable(int fd, FdState& s,
-                               std::span<Completion>& out, int& n) {
+void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
+                               int& n) {
     // Watch interest takes readiness completions.
     if (has(s.interest, Interest::Readable)) {
         if (n < int(out.size())) {
@@ -316,13 +322,14 @@ void EpollBackend::on_readable(int fd, FdState& s,
             c.result = CompletionFlag::ReadyRead;
             c.stamps.tsc = rdtsc();
             out[n++] = c;
-        } else pending_events_.emplace_back(fd, EPOLLIN);
+        } else
+            pending_events_.emplace_back(fd, EPOLLIN);
     }
 
     if (s.accept_armed) {
         for (std::size_t i = 0; i < kAcceptsPerWait; ++i) {
-            int cfd = ::accept4(fd, nullptr, nullptr,
-                                SOCK_NONBLOCK | SOCK_CLOEXEC);
+            int cfd =
+                ::accept4(fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
             if (cfd < 0) break;
             if (n < int(out.size())) {
                 Completion c{};
@@ -333,7 +340,7 @@ void EpollBackend::on_readable(int fd, FdState& s,
             } else {
                 // Completion capacity exhausted: stash fd for next wait.
                 pending_events_.emplace_back(fd, EPOLLIN);
-                ::close(cfd);   // cannot queue it; drop
+                ::close(cfd);  // cannot queue it; drop
                 break;
             }
         }
@@ -347,10 +354,19 @@ void EpollBackend::on_readable(int fd, FdState& s,
     std::int32_t result = 0;
     for (;;) {
         MutByteSpan rem = s.recv_buf.subspan(total);
-        if (rem.empty()) { result = std::int32_t(total); break; }
+        if (rem.empty()) {
+            result = std::int32_t(total);
+            break;
+        }
         ssize_t r = ::recv(fd, rem.data(), rem.size(), MSG_NOSIGNAL);
-        if (r > 0) { total += std::size_t(r); continue; }
-        if (r == 0) { result = total ? std::int32_t(total) : 0; break; }
+        if (r > 0) {
+            total += std::size_t(r);
+            continue;
+        }
+        if (r == 0) {
+            result = total ? std::int32_t(total) : 0;
+            break;
+        }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             result = total ? std::int32_t(total) : -EAGAIN;
         } else if (errno == EINTR) {
@@ -361,7 +377,7 @@ void EpollBackend::on_readable(int fd, FdState& s,
         break;
     }
 
-    if (result == -EAGAIN) return;   // nothing to report yet
+    if (result == -EAGAIN) return;  // nothing to report yet
     s.recv_armed = false;
     update_events(fd, s);
     if (n < int(out.size())) {
@@ -372,13 +388,13 @@ void EpollBackend::on_readable(int fd, FdState& s,
         out[n++] = c;
     } else {
         pending_events_.emplace_back(fd, EPOLLIN);
-        s.recv_armed = true;         // re-arm so the event is not lost
+        s.recv_armed = true;  // re-arm so the event is not lost
         update_events(fd, s);
     }
 }
 
-void EpollBackend::on_writable(int fd, FdState& s,
-                               std::span<Completion>& out, int& n) {
+void EpollBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
+                               int& n) {
     if (s.connect_pending) {
         s.connect_pending = false;
         int err = 0;
@@ -391,7 +407,8 @@ void EpollBackend::on_writable(int fd, FdState& s,
             c.result = err ? -err : 0;
             c.stamps.tsc = rdtsc();
             out[n++] = c;
-        } else pending_events_.emplace_back(fd, EPOLLOUT);
+        } else
+            pending_events_.emplace_back(fd, EPOLLOUT);
     }
 
     while (!s.sendq.empty()) {
@@ -407,8 +424,10 @@ void EpollBackend::on_writable(int fd, FdState& s,
             c.stamps.tsc = rdtsc();
             s.sendq.pop_front();
             update_events(fd, s);
-            if (n < int(out.size())) out[n++] = c;
-            else pending_events_.emplace_back(fd, EPOLLOUT);
+            if (n < int(out.size()))
+                out[n++] = c;
+            else
+                pending_events_.emplace_back(fd, EPOLLOUT);
             continue;
         }
         req.off += std::size_t(w);
@@ -419,8 +438,10 @@ void EpollBackend::on_writable(int fd, FdState& s,
             c.stamps.tsc = rdtsc();
             s.sendq.pop_front();
             update_events(fd, s);
-            if (n < int(out.size())) out[n++] = c;
-            else pending_events_.emplace_back(fd, EPOLLOUT);
+            if (n < int(out.size()))
+                out[n++] = c;
+            else
+                pending_events_.emplace_back(fd, EPOLLOUT);
         }
     }
 
@@ -431,7 +452,8 @@ void EpollBackend::on_writable(int fd, FdState& s,
             c.result = CompletionFlag::ReadyWrite;
             c.stamps.tsc = rdtsc();
             out[n++] = c;
-        } else pending_events_.emplace_back(fd, EPOLLOUT);
+        } else
+            pending_events_.emplace_back(fd, EPOLLOUT);
     }
 }
 
@@ -447,7 +469,7 @@ void EpollBackend::on_errorish(int fd, FdState& s, std::uint32_t ev,
         if (n < int(out.size())) {
             Completion c{};
             c.user = s.recv_ud;
-            c.result = err ? -err : 0;   // 0 == EOF on HUP/RDHUP
+            c.result = err ? -err : 0;  // 0 == EOF on HUP/RDHUP
             c.stamps.tsc = rdtsc();
             out[n++] = c;
         } else {
@@ -461,22 +483,22 @@ void EpollBackend::on_errorish(int fd, FdState& s, std::uint32_t ev,
         if (n < int(out.size())) {
             Completion c{};
             c.user = s.watch_ud;
-            c.result = ((ev & EPOLLERR) ? CompletionFlag::ReadyErr : 0) |
-                       ((ev & (EPOLLHUP | EPOLLRDHUP)) ? CompletionFlag::ReadyHangup : 0);
+            c.result =
+                ((ev & EPOLLERR) ? CompletionFlag::ReadyErr : 0) |
+                ((ev & (EPOLLHUP | EPOLLRDHUP)) ? CompletionFlag::ReadyHangup
+                                                : 0);
             c.stamps.tsc = rdtsc();
             out[n++] = c;
-        } else pending_events_.emplace_back(fd, ev);
+        } else
+            pending_events_.emplace_back(fd, ev);
     }
 }
 
 void EpollBackend::dispatch_event(int fd, FdState& s, std::uint32_t ev,
                                   std::span<Completion>& out, int& n) {
-    if (ev & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
-        on_errorish(fd, s, ev, out, n);
-    if (ev & EPOLLIN)
-        on_readable(fd, s, out, n);
-    if (ev & EPOLLOUT)
-        on_writable(fd, s, out, n);
+    if (ev & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) on_errorish(fd, s, ev, out, n);
+    if (ev & EPOLLIN) on_readable(fd, s, out, n);
+    if (ev & EPOLLOUT) on_writable(fd, s, out, n);
 }
 
-} // namespace afx
+}  // namespace afx

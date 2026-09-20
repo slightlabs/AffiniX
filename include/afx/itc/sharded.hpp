@@ -20,11 +20,10 @@ class Sharded {
         std::size_t index = 0;
     };
 
-public:
+  public:
     // factory() runs on each shard's thread and returns the shard's T.
     template <class F>
-    Sharded(std::vector<Mailbox> mbs, F&& factory)
-        : n_(mbs.size()) {
+    Sharded(std::vector<Mailbox> mbs, F&& factory) : n_(mbs.size()) {
         slots_ = std::unique_ptr<Slot[]>(new Slot[n_]);
         for (std::size_t i = 0; i < n_; ++i) {
             slots_[i].mb = mbs[i];
@@ -65,7 +64,8 @@ public:
             Slot* s = &slots_[i];
             s->mb.post([st, s, map]() mutable {
                 if (!s->value) {
-                    if (st->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1)
+                    if (st->remaining.fetch_sub(1, std::memory_order_acq_rel) ==
+                        1)
                         st->done(st->acc.load());
                     return;
                 }
@@ -80,9 +80,9 @@ public:
         }
     }
 
-private:
+  private:
     std::size_t n_ = 0;
     std::unique_ptr<Slot[]> slots_;
 };
 
-} // namespace afx
+}  // namespace afx

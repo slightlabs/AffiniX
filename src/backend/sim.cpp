@@ -55,8 +55,7 @@ Result<void> SimBackend::submit_accept(UserData u, int listen_fd) {
     return {};
 }
 
-Result<void> SimBackend::submit_connect(UserData u, int fd,
-                                        const SockAddr&) {
+Result<void> SimBackend::submit_connect(UserData u, int fd, const SockAddr&) {
     // Connects succeed immediately unless the harness says otherwise via
     // deliver_watch-style control — the sim models an instant network.
     fds_[fd];  // ensure state exists
@@ -66,8 +65,14 @@ Result<void> SimBackend::submit_connect(UserData u, int fd,
 
 Result<void> SimBackend::cancel(UserData u) {
     for (auto& [fd, s] : fds_) {
-        if (s.recv_armed && s.recv_ud == u) { s.recv_armed = false; push(u, -ECANCELED); }
-        if (s.accept_armed && s.accept_ud == u) { s.accept_armed = false; push(u, -ECANCELED); }
+        if (s.recv_armed && s.recv_ud == u) {
+            s.recv_armed = false;
+            push(u, -ECANCELED);
+        }
+        if (s.accept_armed && s.accept_ud == u) {
+            s.accept_armed = false;
+            push(u, -ECANCELED);
+        }
     }
     return {};
 }
@@ -83,7 +88,10 @@ int SimBackend::wait(std::span<Completion> out, Nanos) {
 
 // ---- test / simulation API -------------------------------------------------
 
-int SimBackend::add_fd() { fds_[next_fd_]; return next_fd_++; }
+int SimBackend::add_fd() {
+    fds_[next_fd_];
+    return next_fd_++;
+}
 
 void SimBackend::feed(int fd, ByteSpan bytes) {
     auto& s = fds_[fd];
@@ -107,7 +115,7 @@ void SimBackend::fail_peer(int fd, int err) {
 
 void SimBackend::deliver_accept(int listen_fd, int peer_fd) {
     auto& s = fds_[listen_fd];
-    fds_[peer_fd];            // peer fd exists
+    fds_[peer_fd];  // peer fd exists
     if (s.accept_armed) push(s.accept_ud, peer_fd);
 }
 
@@ -149,13 +157,17 @@ void SimBackend::pump_recv(int, FdState& s) {
         return;
     }
     if (s.inbound.empty()) {
-        if (s.peer_closed) { s.recv_armed = false; push(s.recv_ud, 0); }
+        if (s.peer_closed) {
+            s.recv_armed = false;
+            push(s.recv_ud, 0);
+        }
         return;
     }
     std::size_t n = std::min(s.inbound.size(), s.recv_buf.size());
-    for (std::size_t i = 0; i < n; ++i) s.recv_buf[i] = s.inbound.front(), s.inbound.pop_front();
+    for (std::size_t i = 0; i < n; ++i)
+        s.recv_buf[i] = s.inbound.front(), s.inbound.pop_front();
     s.recv_armed = false;
     push(s.recv_ud, std::int32_t(n));
 }
 
-} // namespace afx
+}  // namespace afx

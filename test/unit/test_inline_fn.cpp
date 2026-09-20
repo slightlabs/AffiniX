@@ -45,9 +45,9 @@ TEST_CASE("InlineFn destruction runs the callable's destructor") {
         InlineFn<void(), 48> f = [sp] {};
         CHECK(sp.use_count() == 2);
         f();
-        CHECK(sp.use_count() == 2);   // callable survives invocation
+        CHECK(sp.use_count() == 2);  // callable survives invocation
     }
-    CHECK(sp.use_count() == 1);       // destroyed with the InlineFn
+    CHECK(sp.use_count() == 1);  // destroyed with the InlineFn
 
     {
         // heap path

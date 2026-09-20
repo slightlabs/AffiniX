@@ -11,17 +11,17 @@ using namespace afx;
 
 // Wire format for tests: [magic:1][len:2 BE][type:1] + body
 struct TestHeader {
-    std::uint8_t  magic;
+    std::uint8_t magic;
     std::uint16_t len_be;
-    std::uint8_t  type;
+    std::uint8_t type;
 };
 struct TestMsg {
     TestHeader header;
-    ByteSpan   body;
+    ByteSpan body;
 };
 
 struct TestProto {
-    using Header  = TestHeader;
+    using Header = TestHeader;
     using Message = TestMsg;
     static constexpr std::size_t kHeaderSize = sizeof(TestHeader);
     static constexpr std::uint8_t kMagic = 0xA5;
@@ -38,7 +38,8 @@ struct TestProto {
 static_assert(FixedHeaderProtocol<TestProto>);
 static_assert(Protocol<FixedHeaderFramer<TestProto>>);
 
-static std::vector<std::byte> frame(std::string_view body, std::uint8_t type = 1) {
+static std::vector<std::byte> frame(std::string_view body,
+                                    std::uint8_t type = 1) {
     std::vector<std::byte> out(TestProto::kHeaderSize + body.size());
     TestHeader h{TestProto::kMagic, be16(std::uint16_t(body.size())), type};
     std::memcpy(out.data(), &h, sizeof(h));
@@ -60,7 +61,7 @@ TEST_CASE("FixedHeaderFramer parses a complete frame") {
 TEST_CASE("FixedHeaderFramer asks for more on partial input") {
     FixedHeaderFramer<TestProto> f;
     auto bytes = frame("hello");
-    auto pr = f.parse(ByteSpan(bytes.data(), 2));       // partial header
+    auto pr = f.parse(ByteSpan(bytes.data(), 2));  // partial header
     CHECK(pr.kind == decltype(pr)::Kind::NeedMore);
     CHECK(pr.need == TestProto::kHeaderSize - 2);
 
@@ -72,7 +73,7 @@ TEST_CASE("FixedHeaderFramer asks for more on partial input") {
 TEST_CASE("FixedHeaderFramer rejects bad magic") {
     FixedHeaderFramer<TestProto> f;
     auto bytes = frame("x");
-    bytes[0] = std::byte{0x00};                          // corrupt magic
+    bytes[0] = std::byte{0x00};  // corrupt magic
     auto pr = f.parse(ByteSpan(bytes.data(), bytes.size()));
     CHECK(pr.kind == decltype(pr)::Kind::Error);
     CHECK(pr.error.category == ErrorCategory::Frame);
@@ -95,7 +96,9 @@ TEST_CASE("FixedHeaderFramer handles back-to-back frames") {
 
 // Line-delimited protocol exercises the general Protocol path (no framer).
 struct LineProto {
-    struct Message { ByteSpan line; };
+    struct Message {
+        ByteSpan line;
+    };
     ParseResult<Message> parse(ByteSpan in) const {
         for (std::size_t i = 0; i < in.size(); ++i)
             if (in[i] == std::byte{'\n'})
@@ -120,7 +123,7 @@ TEST_CASE("LineProto splits on newlines across arbitrary boundaries") {
 
 TEST_CASE("FramerFor picks Protocol directly, wraps FixedHeaderProtocol") {
     static_assert(std::is_same_v<FramerForT<LineProto>, LineProto>);
-    static_assert(std::is_same_v<FramerForT<TestProto>,
-                                 FixedHeaderFramer<TestProto>>);
+    static_assert(
+        std::is_same_v<FramerForT<TestProto>, FixedHeaderFramer<TestProto>>);
     CHECK(true);
 }

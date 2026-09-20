@@ -24,14 +24,12 @@ TEST_CASE("TimerWheel fires at the containing tick, never early") {
         nodes[i].expiry_tick = w.tick_of(at);
         w.insert(nodes[i], w.now_tick());
     };
-    auto fire = [&](TimerNode& n) {
-        fired.push_back(int(&n - nodes.data()));
-    };
+    auto fire = [&](TimerNode& n) { fired.push_back(int(&n - nodes.data())); };
 
-    arm(0, TimePoint(1500us));   // tick 2 (ceil of 1.5 ms)
-    arm(1, TimePoint(2ms));      // tick 2
-    arm(2, TimePoint(300ms));    // level-1 slot
-    arm(3, TimePoint(1us));      // tick 1
+    arm(0, TimePoint(1500us));  // tick 2 (ceil of 1.5 ms)
+    arm(1, TimePoint(2ms));     // tick 2
+    arm(2, TimePoint(300ms));   // level-1 slot
+    arm(3, TimePoint(1us));     // tick 1
 
     w.advance(w.floor_tick(TimePoint(1ms)), fire);
     CHECK(fired == std::vector<int>{3});
@@ -58,9 +56,9 @@ TEST_CASE("TimerWheel multi-level cascade and long horizon") {
     };
     auto fire = [&](TimerNode& n) { fired.push_back(int(&n - nodes.data())); };
 
-    arm(0, TimePoint(70s));     // level 2 territory (256 ms per L1 slot)
-    arm(1, TimePoint(20min));   // level 3
-    arm(2, TimePoint(256ms));   // first tick of level 1's second slot
+    arm(0, TimePoint(70s));    // level 2 territory (256 ms per L1 slot)
+    arm(1, TimePoint(20min));  // level 3
+    arm(2, TimePoint(256ms));  // first tick of level 1's second slot
 
     auto advance_to = [&](TimePoint t) {
         std::uint64_t target = w.floor_tick(t);
@@ -87,12 +85,14 @@ TEST_CASE("TimerWheel overdue insert fires on the next advance step") {
     w.advance(w.floor_tick(TimePoint(200ms)), [](TimerNode&) {});
 
     TimerNode n;
-    n.expiry = TimePoint(50ms);             // already in the past
-    n.expiry_tick = w.tick_of(n.expiry);    // tick 50 < now_tick 200
+    n.expiry = TimePoint(50ms);           // already in the past
+    n.expiry_tick = w.tick_of(n.expiry);  // tick 50 < now_tick 200
     w.insert(n, w.now_tick());
 
     int fired = 0;
-    w.advance(w.now_tick() + 1, [&](TimerNode& m) { if (&m == &n) ++fired; });
+    w.advance(w.now_tick() + 1, [&](TimerNode& m) {
+        if (&m == &n) ++fired;
+    });
     CHECK(fired == 1);
 }
 
@@ -104,16 +104,18 @@ TEST_CASE("TimerWheel cascade onto the current tick fires that step") {
     // 256-tick boundary fired one pump late (caught by the model test).
     TimerWheel w(1ms);
     TimerNode n;
-    n.expiry = TimePoint(512ms);           // tick 512: level-1 digit boundary
+    n.expiry = TimePoint(512ms);  // tick 512: level-1 digit boundary
     n.expiry_tick = w.tick_of(n.expiry);
-    w.insert(n, 0);                        // level 1, digit-1 slot 2
+    w.insert(n, 0);  // level 1, digit-1 slot 2
 
     int fired = 0;
-    auto fire = [&](TimerNode& m) { if (&m == &n) ++fired; };
+    auto fire = [&](TimerNode& m) {
+        if (&m == &n) ++fired;
+    };
     w.advance(511, fire);
-    CHECK(fired == 0);                     // not early
+    CHECK(fired == 0);  // not early
     w.advance(512, fire);
-    CHECK(fired == 1);                     // fires the step it cascades in
+    CHECK(fired == 1);  // fires the step it cascades in
 }
 
 TEST_CASE("TimerWheel unlink is O(1) and idempotent") {
@@ -124,7 +126,7 @@ TEST_CASE("TimerWheel unlink is O(1) and idempotent") {
     w.insert(n, 0);
     CHECK(w.size() == 1);
     w.unlink(n);
-    w.unlink(n);                 // safe to unlink twice
+    w.unlink(n);  // safe to unlink twice
     CHECK(w.size() == 0);
     int fired = 0;
     w.advance(w.floor_tick(TimePoint(100ms)), [&](TimerNode&) { ++fired; });
@@ -156,7 +158,7 @@ TEST_CASE("TimerHeap removal mid-heap") {
         h.push(nodes[i]);
     }
     h.remove(nodes[1]);
-    h.remove(nodes[1]);          // idempotent
+    h.remove(nodes[1]);  // idempotent
     std::vector<TimePoint> out;
     h.expire(TimePoint(1s), [&](TimerNode& n) { out.push_back(n.expiry); });
     CHECK(out.size() == 3);
@@ -168,7 +170,8 @@ TEST_CASE("TimerWheel model test vs multimap") {
     TimerWheel w(1ms);
     std::vector<std::unique_ptr<TimerNode>> nodes;
     std::unordered_map<TimerNode*, int> ids;
-    std::map<std::pair<std::uint64_t, int>, TimerNode*> model;  // (tick,id)->node
+    std::map<std::pair<std::uint64_t, int>, TimerNode*>
+        model;  // (tick,id)->node
     std::uint64_t now = 0;
 
     for (int round = 0; round < 300; ++round) {
@@ -176,8 +179,9 @@ TEST_CASE("TimerWheel model test vs multimap") {
         if (op < 55) {
             // arm
             auto n = std::make_unique<TimerNode>();
-            std::uint64_t delay = rng() % (300 * 1000);   // up to 300 s
-            n->expiry = TimePoint(Nanos(now * 1'000'000) + Nanos(delay * 1'000'000));
+            std::uint64_t delay = rng() % (300 * 1000);  // up to 300 s
+            n->expiry =
+                TimePoint(Nanos(now * 1'000'000) + Nanos(delay * 1'000'000));
             n->expiry_tick = w.tick_of(n->expiry);
             int id = int(nodes.size());
             if (!w.fits(n->expiry_tick, w.now_tick())) continue;
@@ -193,7 +197,10 @@ TEST_CASE("TimerWheel model test vs multimap") {
             TimerNode* n = it->second;
             w.unlink(*n);
             for (auto mit = model.begin(); mit != model.end();) {
-                if (mit->second == n) mit = model.erase(mit); else ++mit;
+                if (mit->second == n)
+                    mit = model.erase(mit);
+                else
+                    ++mit;
             }
         } else {
             // advance time 1..50 ticks, firing
@@ -224,7 +231,7 @@ TEST_CASE("EM timers: after fires once, at is precise") {
     env.em.at(TimePoint(1500us), [&](TimerCtx) { ++at_n; });
 
     env.advance(1ms);
-    CHECK(at_n == 0);            // heap timer: waits for its exact deadline
+    CHECK(at_n == 0);  // heap timer: waits for its exact deadline
     env.advance(500us);
     env.pump();
     CHECK(at_n == 1);
@@ -232,7 +239,7 @@ TEST_CASE("EM timers: after fires once, at is precise") {
     env.advance(9ms);
     CHECK(after_n == 1);
     env.advance(100ms);
-    CHECK(after_n == 1);         // fired once only
+    CHECK(after_n == 1);  // fired once only
 }
 
 TEST_CASE("EM timers: every() FixedRate fires per period without drift") {
@@ -252,7 +259,10 @@ TEST_CASE("EM timers: FixedRate coalesces overrun and reports missed") {
     TestEnv env;
     int fired = 0;
     std::uint32_t missed = 0;
-    env.em.every(1ms, [&](TimerCtx c) { ++fired; missed += c.missed; });
+    env.em.every(1ms, [&](TimerCtx c) {
+        ++fired;
+        missed += c.missed;
+    });
     // Jump 5 periods at once: one callback; slots 1..5 all elapsed,
     // so missed = 4 overruns beyond the delivered one.
     env.em.clock().advance(5ms);
@@ -267,8 +277,9 @@ TEST_CASE("EM timers: FixedRate coalesces overrun and reports missed") {
 TEST_CASE("EM timers: FixedDelay measures from completion") {
     TestEnv env;
     std::vector<TimePoint> fired_at;
-    env.em.every(1ms, [&](TimerCtx) { fired_at.push_back(env.em.now()); },
-                 Duration::zero(), RepeatMode::FixedDelay);
+    env.em.every(
+        1ms, [&](TimerCtx) { fired_at.push_back(env.em.now()); },
+        Duration::zero(), RepeatMode::FixedDelay);
     env.em.clock().advance(3ms);
     env.pump();
     env.em.clock().advance(3ms);
@@ -283,7 +294,7 @@ TEST_CASE("EM timers: cancel is safe on stale ids") {
     int fired = 0;
     auto id = env.em.after(5ms, [&](TimerCtx) { ++fired; });
     CHECK(env.em.cancel(id));
-    CHECK(!env.em.cancel(id));          // already cancelled: no-op
+    CHECK(!env.em.cancel(id));  // already cancelled: no-op
     env.advance(10ms);
     CHECK(fired == 0);
     // The slot may be reused; the stale id must still be a no-op.
@@ -299,11 +310,11 @@ TEST_CASE("EM timers: cancel-from-callback including self") {
     env.em.after(1ms, [&](TimerCtx c) {
         ++fired;
         self = c.id;
-        env.em.cancel(c.id);            // legal: self-cancel in callback
+        env.em.cancel(c.id);  // legal: self-cancel in callback
     });
     env.advance(2ms);
     CHECK(fired == 1);
-    env.advance(10ms);                  // must not fire again / crash
+    env.advance(10ms);  // must not fire again / crash
     CHECK(fired == 1);
 }
 
@@ -321,14 +332,15 @@ TEST_CASE("EM timers: TimerGroup cancels all members at once") {
     TestEnv env;
     int fired = 0;
     auto g = env.em.make_timer_group();
-    env.em.after(1ms,  [&](TimerCtx) { ++fired; }, g);
-    env.em.after(2ms,  [&](TimerCtx) { ++fired; }, g);
-    env.em.every(3ms,  [&](TimerCtx) { ++fired; }, Duration::zero(),
-                 RepeatMode::FixedRate, g);
-    env.em.after(1ms,  [&](TimerCtx) { ++fired; });   // not in group
+    env.em.after(1ms, [&](TimerCtx) { ++fired; }, g);
+    env.em.after(2ms, [&](TimerCtx) { ++fired; }, g);
+    env.em.every(
+        3ms, [&](TimerCtx) { ++fired; }, Duration::zero(),
+        RepeatMode::FixedRate, g);
+    env.em.after(1ms, [&](TimerCtx) { ++fired; });  // not in group
     CHECK(env.em.cancel_group(g) == 3);
     env.advance(10ms);
-    CHECK(fired == 1);                 // only the ungrouped timer fired
+    CHECK(fired == 1);  // only the ungrouped timer fired
 }
 
 TEST_CASE("EM timers: time_until and reschedule") {

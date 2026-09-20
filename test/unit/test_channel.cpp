@@ -19,7 +19,7 @@ TEST_CASE("Channel SPSC delivers batches to the attached EM") {
         got.insert(got.end(), batch.begin(), batch.end());
     });
     for (int i = 0; i < 10; ++i) CHECK(tx.try_push(i));
-    env.em.poll_once();          // drain mailbox -> channel drain -> callback
+    env.em.poll_once();  // drain mailbox -> channel drain -> callback
     CHECK(got.size() == 10);
     CHECK(got.back() == 9);
 }
@@ -48,7 +48,7 @@ TEST_CASE("Channel poll() works without an EM") {
     // No attach: poke() skips posting; poll() drains manually.
     tx.try_push(1);
     tx.try_push(2);
-    rx.poll();                   // no callback attached: just drains
+    rx.poll();  // no callback attached: just drains
     CHECK(n == 0);
 }
 
@@ -68,24 +68,25 @@ TEST_CASE("Fan round-robin spreads across shards") {
     Mailbox mb = env.em.mailbox();
     Fan<int> fan({mb, mb, mb, mb});
     int n = 0;
-    for (int i = 0; i < 8; ++i)
-        fan.dispatch(i, [&](int) { ++n; });
+    for (int i = 0; i < 8; ++i) fan.dispatch(i, [&](int) { ++n; });
     env.em.poll_once();
     CHECK(n == 8);
 }
 
 TEST_CASE("Fan hash-by-key pins same key to same shard") {
-    struct Item { int key; int v; };
+    struct Item {
+        int key;
+        int v;
+    };
     // 4 real mailboxes but we only check pick() determinism via dispatch
     // counts: same key must always route to the same mailbox.
     TestEnv env;
     Mailbox mb = env.em.mailbox();
     Fan<Item> fan({mb, mb, mb, mb}, HashBy<Item, int>{&Item::key});
     int n = 0;
-    for (int i = 0; i < 16; ++i)
-        fan.dispatch(Item{7, i}, [&](Item) { ++n; });
+    for (int i = 0; i < 16; ++i) fan.dispatch(Item{7, i}, [&](Item) { ++n; });
     env.em.poll_once();
-    CHECK(n == 16);              // all landed on one shard (this EM)
+    CHECK(n == 16);  // all landed on one shard (this EM)
 }
 
 TEST_CASE("Fan broadcast reaches every mailbox") {

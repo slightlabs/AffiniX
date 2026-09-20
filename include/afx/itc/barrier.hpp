@@ -13,7 +13,7 @@
 namespace afx {
 
 class Barrier {
-public:
+  public:
     // Post `per_shard` to every mailbox; when the last shard reports in, run
     // `done` (on that shard's thread).
     template <class F1, class F2>
@@ -37,4 +37,4 @@ public:
     }
 };
 
-} // namespace afx
+}  // namespace afx

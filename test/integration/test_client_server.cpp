@@ -11,10 +11,10 @@
 #include "afx/net/tcp_server.hpp"
 
 using namespace afx;
-using afx::test::EchoHeader;
-using afx::test::EchoProto;
-using afx::test::EchoMsg;
 using afx::test::echo_frame;
+using afx::test::EchoHeader;
+using afx::test::EchoMsg;
+using afx::test::EchoProto;
 
 // Client + server on one real EM over loopback (§15 integration).
 TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
@@ -32,15 +32,19 @@ TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
                 if (!c) continue;
                 std::array<std::byte, sizeof(EchoHeader)> hdr;
                 std::memcpy(hdr.data(), &m.header, sizeof(hdr));
-                std::array<ByteSpan, 2> parts{
-                    ByteSpan(hdr.data(), hdr.size()), m.body};
+                std::array<ByteSpan, 2> parts{ByteSpan(hdr.data(), hdr.size()),
+                                              m.body};
                 c->send_scatter(parts);
             }
         };
         ServerConfig scfg;
         scfg.bind = SockAddr::loopback(0);
         auto srv = em.make_server<EchoProto>(scfg, std::move(sh));
-        if (!srv) { ready.set_value(); em.stop(); return; }
+        if (!srv) {
+            ready.set_value();
+            em.stop();
+            return;
+        }
         std::uint16_t port = (*srv)->bound_addr().port();
 
         Handlers<EchoProto> ch;
@@ -62,7 +66,11 @@ TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
         ccfg.auto_reconnect = true;
         ccfg.reconnect = Backoff{10ms, 100ms, 0.0, Duration::zero()};
         auto cli = em.make_client<EchoProto>(ccfg, std::move(ch));
-        if (!cli) { ready.set_value(); em.stop(); return; }
+        if (!cli) {
+            ready.set_value();
+            em.stop();
+            return;
+        }
 
         ready.set_value();
         em.run();
@@ -77,7 +85,7 @@ TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
 
     em.stop();
     t.join();
-    CHECK(closes >= 1);          // shutdown closes the conn -> on_close
+    CHECK(closes >= 1);  // shutdown closes the conn -> on_close
 }
 
 // Connect to a dead port: ConnectFailed, no auto-reconnect → Disconnected.

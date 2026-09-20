@@ -5,8 +5,8 @@
 
 #include "afx/backend/sim.hpp"
 #include "afx/core/event_manager.hpp"
-#include "afx/net/tcp_server.hpp"
 #include "afx/net/tcp_client.hpp"
+#include "afx/net/tcp_server.hpp"
 
 namespace afx::test {
 
@@ -19,7 +19,9 @@ struct TestEnv {
     explicit TestEnv(EventManagerConfig cfg)
         : em(std::move(cfg), VirtualClock{}, SimBackend{}) {}
 
-    void pump(std::size_t n = 1) { while (n--) em.poll_once(); }
+    void pump(std::size_t n = 1) {
+        while (n--) em.poll_once();
+    }
 
     void advance(Duration d) {
         em.clock().advance(d);
@@ -33,4 +35,4 @@ struct TestEnv {
     SimBackend& sim() { return em.backend(); }
 };
 
-} // namespace afx::test
+}  // namespace afx::test

@@ -58,9 +58,10 @@ std::string SockAddr::to_string() const {
     if (ss_.ss_family == AF_INET6) {
         auto* in = reinterpret_cast<const sockaddr_in6*>(&ss_);
         inet_ntop(AF_INET6, &in->sin6_addr, buf, sizeof(buf));
-        return std::string("[") + buf + "]:" + std::to_string(ntohs(in->sin6_port));
+        return std::string("[") + buf +
+               "]:" + std::to_string(ntohs(in->sin6_port));
     }
     return "<unknown>";
 }
 
-} // namespace afx
+}  // namespace afx

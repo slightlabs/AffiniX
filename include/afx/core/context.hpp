@@ -15,13 +15,14 @@ namespace afx {
 // Deadline: absolute point by which work must complete. {} == none.
 // ---------------------------------------------------------------------------
 class Deadline {
-public:
+  public:
     Deadline() = default;
     explicit Deadline(TimePoint t) : t_(t), set_(true) {}
 
     static Deadline at(TimePoint t) { return Deadline(t); }
     static Deadline in(Duration d) {
-        return Deadline(TimePoint(std::chrono::steady_clock::now().time_since_epoch() + d));
+        return Deadline(
+            TimePoint(std::chrono::steady_clock::now().time_since_epoch() + d));
     }
 
     bool is_set() const noexcept { return set_; }
@@ -42,7 +43,7 @@ public:
 
     bool operator==(const Deadline&) const = default;
 
-private:
+  private:
     Deadline(TimePoint t, bool s) : t_(t), set_(s) {}
     TimePoint t_{};
     bool set_ = false;
@@ -52,11 +53,11 @@ private:
 // TraceId: 16-byte trace id + 8-byte span id.
 // ---------------------------------------------------------------------------
 struct TraceId {
-    std::uint64_t hi = 0;   // trace id high
-    std::uint64_t lo = 0;   // trace id low
-    std::uint64_t span = 0; // span id
+    std::uint64_t hi = 0;    // trace id high
+    std::uint64_t lo = 0;    // trace id low
+    std::uint64_t span = 0;  // span id
 
-    using Short = std::uint64_t; // compact form used by the flight recorder
+    using Short = std::uint64_t;  // compact form used by the flight recorder
 
     bool valid() const noexcept { return hi || lo; }
     Short short_id() const noexcept { return hi ^ lo; }
@@ -67,7 +68,7 @@ struct TraceId {
 // StopToken: cooperative cancellation shared with work items.
 // ---------------------------------------------------------------------------
 class StopToken {
-public:
+  public:
     StopToken() = default;
 
     bool stop_requested() const noexcept {
@@ -75,19 +76,24 @@ public:
     }
     explicit operator bool() const noexcept { return st_ != nullptr; }
 
-private:
+  private:
     friend class StopSource;
-    struct State { std::atomic<bool> flag{false}; };
+    struct State {
+        std::atomic<bool> flag{false};
+    };
     explicit StopToken(std::shared_ptr<State> s) : st_(std::move(s)) {}
     std::shared_ptr<State> st_;
 };
 
 class StopSource {
-public:
+  public:
     StopSource() : st_(std::make_shared<StopToken::State>()) {}
     StopToken token() const { return StopToken(st_); }
-    void request() noexcept { st_->flag.store(true, std::memory_order_release); }
-private:
+    void request() noexcept {
+        st_->flag.store(true, std::memory_order_release);
+    }
+
+  private:
     std::shared_ptr<StopToken::State> st_;
 };
 
@@ -95,10 +101,10 @@ private:
 // Context: ambient per-work-item data (§7.4).
 // ---------------------------------------------------------------------------
 struct Context {
-    Deadline      deadline{};      // absolute; unset == none
-    TraceId       trace{};
-    StopToken     stop{};
-    std::uint32_t priority = 0;    // advisory; used by Fan and WorkerPool
+    Deadline deadline{};  // absolute; unset == none
+    TraceId trace{};
+    StopToken stop{};
+    std::uint32_t priority = 0;  // advisory; used by Fan and WorkerPool
 };
 
 namespace detail {
@@ -109,6 +115,6 @@ inline const Context& ambient_context() noexcept {
     static const Context empty{};
     return tls_ambient ? *tls_ambient : empty;
 }
-} // namespace detail
+}  // namespace detail
 
-} // namespace afx
+}  // namespace afx

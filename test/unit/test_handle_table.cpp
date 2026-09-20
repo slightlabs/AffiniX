@@ -4,7 +4,9 @@
 
 using namespace afx;
 
-struct Widget { int v; };
+struct Widget {
+    int v;
+};
 using WidgetId = Handle<struct WidgetTag>;
 
 TEST_CASE("HandleTable insert/get/release") {
@@ -17,7 +19,7 @@ TEST_CASE("HandleTable insert/get/release") {
     CHECK(t.size() == 1);
 
     t.release(id);
-    CHECK(t.get(id) == nullptr);       // gen bumped at once
+    CHECK(t.get(id) == nullptr);  // gen bumped at once
     CHECK(!t.contains(id));
 }
 
@@ -26,13 +28,13 @@ TEST_CASE("stale handles never alias a new object") {
     auto [a, wa] = t.emplace();
     wa->v = 1;
     t.release(a);
-    t.reclaim();                        // slot returns to the free list
+    t.reclaim();  // slot returns to the free list
 
-    auto [b, wb] = t.emplace();        // reuses slot 0
+    auto [b, wb] = t.emplace();  // reuses slot 0
     wb->v = 2;
     CHECK(b.idx == a.idx);
     CHECK(b.gen != a.gen);
-    CHECK(t.get(a) == nullptr);        // stale id does not alias
+    CHECK(t.get(a) == nullptr);  // stale id does not alias
     CHECK(t.get(b)->v == 2);
 }
 

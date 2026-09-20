@@ -15,14 +15,17 @@
 namespace afx {
 
 enum class ClientState : std::uint8_t {
-    Disconnected, Connecting, Connected, ReconnectWait,
+    Disconnected,
+    Connecting,
+    Connected,
+    ReconnectWait,
 };
 
 struct Backoff {
     Duration initial = 100ms;
-    Duration max     = 30s;
-    double   jitter  = 0.2;
-    Duration current = Duration::zero();   // runtime cursor
+    Duration max = 30s;
+    double jitter = 0.2;
+    Duration current = Duration::zero();  // runtime cursor
 
     Duration next() {
         Duration d = current.count() ? current : initial;
@@ -33,19 +36,19 @@ struct Backoff {
 };
 
 struct ClientConfig {
-    Endpoint   target{};
-    Duration   connect_timeout = 5s;
-    Backoff    reconnect{};
-    bool       auto_reconnect  = true;
-    bool       happy_eyeballs  = true;
+    Endpoint target{};
+    Duration connect_timeout = 5s;
+    Backoff reconnect{};
+    bool auto_reconnect = true;
+    bool happy_eyeballs = true;
     std::optional<SockAddr> bind_local;
     SocketOptions sock{};
-    FlowControl   flow{};
+    FlowControl flow{};
 };
 
 template <class P, class EM>
 class TcpClient {
-public:
+  public:
     using Conn = Connection<P, EM>;
     using StateFn = InlineFn<void(ClientState), 48>;
 
@@ -66,11 +69,11 @@ public:
         addrs_ = std::move(*resolved);
         // Observe Connected via the user's on_open path.
         auto user_open = std::move(handlers_.on_open);
-        handlers_.on_open =
-            [this, u = std::move(user_open)](ConnId id, Peer p) mutable {
-                on_connected();
-                if (u) u(id, p);
-            };
+        handlers_.on_open = [this, u = std::move(user_open)](ConnId id,
+                                                             Peer p) mutable {
+            on_connected();
+            if (u) u(id, p);
+        };
         group_ = em_->make_timer_group();
         connect_next();
         return {};
@@ -80,7 +83,7 @@ public:
     ClientState state() const noexcept { return state_; }
     Connection<P, EM>* conn() { return conn_.get(); }
 
-private:
+  private:
     void set_state(ClientState s) {
         if (state_ == s) return;
         state_ = s;
@@ -96,8 +99,9 @@ private:
         hints.ai_socktype = SOCK_STREAM;
         addrinfo* res = nullptr;
         std::string port = std::to_string(cfg_.target.port);
-        if (::getaddrinfo(cfg_.target.host.c_str(), port.c_str(), &hints, &res)
-                != 0 || !res)
+        if (::getaddrinfo(cfg_.target.host.c_str(), port.c_str(), &hints,
+                          &res) != 0 ||
+            !res)
             return make_error(ErrorCategory::Net, Err::ResolveFailed);
         std::vector<SockAddr> out;
         for (auto* p = res; p; p = p->ai_next) {
@@ -119,15 +123,18 @@ private:
         }
         const SockAddr& target = addrs_[addr_idx_++];
         auto fd = sock::create(target.family(), cfg_.sock);
-        if (!fd) { connect_next(); return; }
+        if (!fd) {
+            connect_next();
+            return;
+        }
         int raw = *fd;
         if (cfg_.bind_local)
             (void)sock::bind(raw, *cfg_.bind_local, false, false);
 
         if (conn_) conn_.reset();
         conn_ = std::make_unique<Conn>(*em_, raw, handlers_,
-                                       typename Conn::Params{cfg_.flow},
-                                       this, &TcpClient::on_conn_gone);
+                                       typename Conn::Params{cfg_.flow}, this,
+                                       &TcpClient::on_conn_gone);
         set_state(ClientState::Connecting);
         em_->submit_connect(conn_->sink(), raw, target);
 
@@ -135,17 +142,18 @@ private:
         // else the configured connect_timeout.
         Duration budget = cfg_.connect_timeout;
         if (em_->context().deadline.is_set())
-            budget = std::min(budget,
-                              em_->context().deadline.remaining(em_->now()));
+            budget =
+                std::min(budget, em_->context().deadline.remaining(em_->now()));
         EM* em = em_;
         auto me = conn_->id();
-        em_->after(budget,
-                   [em, me](TimerCtx) {
-                       if (auto* c = Conn::resolve(*em, me))
-                           if (c->state() == ConnState::Connecting)
-                               c->close(CloseReason::ConnectFailed);
-                   },
-                   group_);
+        em_->after(
+            budget,
+            [em, me](TimerCtx) {
+                if (auto* c = Conn::resolve(*em, me))
+                    if (c->state() == ConnState::Connecting)
+                        c->close(CloseReason::ConnectFailed);
+            },
+            group_);
     }
 
     void on_connected() {
@@ -163,8 +171,13 @@ private:
             std::uniform_real_distribution<double> u(1.0 - j, 1.0 + j);
             d = Duration(std::int64_t(d.count() * u(rng_)));
         }
-        em_->after(d, [this](TimerCtx) { addr_idx_ = 0; connect_next(); },
-                   group_);
+        em_->after(
+            d,
+            [this](TimerCtx) {
+                addr_idx_ = 0;
+                connect_next();
+            },
+            group_);
     }
 
     static void on_conn_gone(void* self, ConnId id, CloseReason r) {
@@ -173,7 +186,7 @@ private:
         // the one that died (a reconnect may already have replaced it).
         if (me->conn_ && me->conn_->id() == id) me->conn_.reset();
         if (r == CloseReason::ConnectFailed) {
-            me->connect_next();      // try the next resolved address
+            me->connect_next();  // try the next resolved address
         } else if (me->state_ != ClientState::Disconnected) {
             me->schedule_reconnect();
         }
@@ -206,4 +219,4 @@ BasicEventManager<C, B>::make_client(ClientConfig cfg, H&& handlers) {
     return s;
 }
 
-} // namespace afx
+}  // namespace afx

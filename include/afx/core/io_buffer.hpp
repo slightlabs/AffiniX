@@ -15,7 +15,7 @@
 namespace afx {
 
 class IoBuffer {
-public:
+  public:
     explicit IoBuffer(std::size_t cap = 64u << 10, std::size_t headroom = 64)
         : cap_(std::max(cap, headroom + 1)),
           buf_(std::make_unique<std::byte[]>(cap_)),
@@ -61,7 +61,9 @@ public:
         return {buf_.get() + start_, n};
     }
 
-    void reserve(std::size_t n) { if (n > cap_) grow(n); }
+    void reserve(std::size_t n) {
+        if (n > cap_) grow(n);
+    }
 
     void compact() {
         if (start_ == headroom_) return;
@@ -69,7 +71,7 @@ public:
         start_ = headroom_;
     }
 
-private:
+  private:
     void ensure_writable(std::size_t at_least) {
         if (cap_ - start_ - size_ >= at_least) return;
         // Reclaim the consumed prefix first; grow only if still short.
@@ -95,4 +97,4 @@ private:
     std::size_t size_ = 0;   // readable byte count
 };
 
-} // namespace afx
+}  // namespace afx

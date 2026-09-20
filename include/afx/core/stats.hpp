@@ -61,7 +61,7 @@ struct Stats {
 // latency metrics in §21. Buckets by significant bits — cheap enough for the
 // hot path and honest at the tail.
 class Histogram {
-public:
+  public:
     // value_ns in nanoseconds; bucket index = floor(log2(max(v,1))) — 64
     // buckets cover 1 ns .. ~292 years.
     void record(std::uint64_t value_ns) noexcept {
@@ -101,7 +101,7 @@ public:
         min_ = ~std::uint64_t(0);
     }
 
-private:
+  private:
     std::array<std::uint64_t, 64> buckets_{};
     std::uint64_t count_ = 0;
     std::uint64_t total_ = 0;
@@ -118,4 +118,4 @@ struct LatencyMetrics {
     Histogram deadline_headroom_ns;
 };
 
-} // namespace afx
+}  // namespace afx

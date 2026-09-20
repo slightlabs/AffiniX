@@ -21,7 +21,7 @@ TEST_CASE("SpscRing basic FIFO") {
 TEST_CASE("SpscRing is bounded") {
     SpscRing<int> r(4);
     for (int i = 0; i < 4; ++i) CHECK(r.try_push(i));
-    CHECK(!r.try_push(4));                 // full: no silent growth
+    CHECK(!r.try_push(4));  // full: no silent growth
     int v;
     CHECK(r.drain([&](int x) { v = x; }, 1) == 1);
     CHECK(v == 0);
@@ -32,9 +32,9 @@ TEST_CASE("SpscRing contiguous batch drain") {
     SpscRing<int> r(16);
     for (int i = 0; i < 10; ++i) r.try_push(i);
     std::vector<int> out;
-    r.drain_contiguous([&](std::span<int> s) {
-        out.insert(out.end(), s.begin(), s.end());
-    }, 16);
+    r.drain_contiguous(
+        [&](std::span<int> s) { out.insert(out.end(), s.begin(), s.end()); },
+        16);
     CHECK(out.size() == 10);
     CHECK(out.front() == 0);
     CHECK(out.back() == 9);
@@ -106,7 +106,10 @@ TEST_CASE("MpscRing model test vs std::deque") {
                 int v;
                 bool got = r.try_pop(v);
                 CHECK(got == !model.empty());
-                if (got) { CHECK(v == model.front()); model.pop_front(); }
+                if (got) {
+                    CHECK(v == model.front());
+                    model.pop_front();
+                }
             }
         }
     }
@@ -120,16 +123,19 @@ TEST_CASE("SpscRing threaded: all items delivered exactly once") {
     std::atomic<long long> sum{0};
 
     std::thread prod([&] {
-        for (int i = 1; i <= N; ++i) while (!r.try_push(i)) {}
+        for (int i = 1; i <= N; ++i)
+            while (!r.try_push(i)) {}
         done = true;
     });
     long long got = 0;
     int expected_next = 1;
     while (!done || !r.empty()) {
-        r.drain([&](int v) {
-            CHECK(v == expected_next++);
-            ++got;
-        }, 1024);
+        r.drain(
+            [&](int v) {
+                CHECK(v == expected_next++);
+                ++got;
+            },
+            1024);
     }
     prod.join();
     CHECK(got == N);

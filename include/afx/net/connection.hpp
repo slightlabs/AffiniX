@@ -4,9 +4,9 @@
 // Owned by a TcpServer/TcpClient on the connection's EM; referenced
 // cross-iteration and cross-thread only by ConnId handle.
 
-#include <cstring>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <cstring>
 #include <vector>
 
 #include "afx/core/event_manager.hpp"
@@ -17,18 +17,22 @@
 namespace afx {
 
 enum class ConnState : std::uint8_t {
-    Connecting, Established, ShutdownWrite, Closing, Closed,
+    Connecting,
+    Established,
+    ShutdownWrite,
+    Closing,
+    Closed,
 };
 
 enum class CloseReason : std::uint8_t {
-    PeerFin,        // orderly close by peer
-    LocalClose,     // close() called locally
-    FrameError,     // protocol validate/parse failure
+    PeerFin,     // orderly close by peer
+    LocalClose,  // close() called locally
+    FrameError,  // protocol validate/parse failure
     IdleTimeout,
     WriteOverflow,  // write queue exceeded policy
     Error,          // socket error
     ConnectFailed,
-    Shutdown,       // EM/runtime teardown
+    Shutdown,  // EM/runtime teardown
 };
 
 // on_messages is required; everything else optional (empty InlineFn).
@@ -36,26 +40,26 @@ template <class P>
 struct Handlers {
     using Message = MessageForT<P>;
     InlineFn<void(ConnId, std::span<const Message>), 64> on_messages;
-    InlineFn<void(ConnId, Peer), 48>                   on_open;
-    InlineFn<void(ConnId, CloseReason), 48>            on_close;
-    InlineFn<void(ConnId, Error), 48>                  on_error;
-    InlineFn<void(ConnId), 48>                         on_writable;
-    P proto{};      // protocol instance (stateful framers allowed)
+    InlineFn<void(ConnId, Peer), 48> on_open;
+    InlineFn<void(ConnId, CloseReason), 48> on_close;
+    InlineFn<void(ConnId, Error), 48> on_error;
+    InlineFn<void(ConnId), 48> on_writable;
+    P proto{};  // protocol instance (stateful framers allowed)
 };
 
 // ---------------------------------------------------------------------------
 
 template <class P, class EM>
 class Connection {
-public:
-    using Framer  = FramerForT<P>;
+  public:
+    using Framer = FramerForT<P>;
     using Message = typename Framer::Message;
     using SinkHandle = typename EM::SinkHandle;
 
     struct Params {
         FlowControl flow{};
-        Duration    idle_read_timeout{};
-        Duration    idle_write_timeout{};
+        Duration idle_read_timeout{};
+        Duration idle_write_timeout{};
         std::size_t read_buffer_size = 64u << 10;
     };
 
@@ -80,7 +84,10 @@ public:
     }
 
     ~Connection() {
-        if (fd_ >= 0) { em_->backend_detach(fd_); ::close(fd_); }
+        if (fd_ >= 0) {
+            em_->backend_detach(fd_);
+            ::close(fd_);
+        }
         if (group_.valid()) em_->cancel_group(group_);
     }
 
@@ -97,13 +104,15 @@ public:
         return c->state_ == ConnState::Closed ? nullptr : c;
     }
 
-    ConnId  id() const noexcept { return id_; }
+    ConnId id() const noexcept { return id_; }
     SinkHandle sink() const noexcept { return sink_; }
-    int     fd() const noexcept { return fd_; }
+    int fd() const noexcept { return fd_; }
     ConnState state() const noexcept { return state_; }
-    EM&     em() const noexcept { return *em_; }
+    EM& em() const noexcept { return *em_; }
     const Peer& peer() const noexcept { return peer_; }
-    std::size_t queued_write_bytes() const noexcept { return write_buf_.size(); }
+    std::size_t queued_write_bytes() const noexcept {
+        return write_buf_.size();
+    }
 
     // Begin reading once Established (accept path, or post-connect).
     void start(Peer peer) {
@@ -114,8 +123,9 @@ public:
         arm_recv();
     }
 
-    // ---- sending ----------------------------------------------------------------
-    // Queues bytes; the loop emits one sendv per connection in stage 6 (§7.3).
+    // ---- sending
+    // ---------------------------------------------------------------- Queues
+    // bytes; the loop emits one sendv per connection in stage 6 (§7.3).
     [[nodiscard]] SendResult send(ByteSpan bytes) {
         if (state_ != ConnState::Established) return SendResult::Closed;
         if (write_buf_.size() + bytes.size() >
@@ -160,8 +170,8 @@ public:
     // Cross-thread handle (§13): send() posts the bytes to the owning EM.
     struct Handle {
         Mailbox mb;
-        ConnId  id;
-        EM*     em;
+        ConnId id;
+        EM* em;
 
         PostResult send(ByteSpan bytes) const {
             std::vector<std::byte> copy(bytes.begin(), bytes.end());
@@ -179,18 +189,28 @@ public:
     };
     Handle handle() const noexcept { return {em_->mailbox(), id_, em_}; }
 
-    // ---- engine side -------------------------------------------------------------
+    // ---- engine side
+    // -------------------------------------------------------------
     static void dispatch(void* obj, OpKind kind, const Completion& c) {
         static_cast<Connection*>(obj)->on_completion(kind, c);
     }
 
     void on_completion(OpKind kind, const Completion& c) {
         switch (kind) {
-        case OpKind::Connect:    on_connect_result(c); break;
-        case OpKind::Recv:       on_recv(c); break;
-        case OpKind::Send:       on_sent(c); break;
-        case OpKind::FlushWrite: flush_write(); break;
-        default: break;
+            case OpKind::Connect:
+                on_connect_result(c);
+                break;
+            case OpKind::Recv:
+                on_recv(c);
+                break;
+            case OpKind::Send:
+                on_sent(c);
+                break;
+            case OpKind::FlushWrite:
+                flush_write();
+                break;
+            default:
+                break;
         }
     }
 
@@ -207,8 +227,9 @@ public:
         start(p);
     }
 
-private:
-    // ---- recv path ---------------------------------------------------------------
+  private:
+    // ---- recv path
+    // ---------------------------------------------------------------
     void arm_recv() {
         if (read_paused_ || state_ != ConnState::Established) return;
         auto w = read_buf_.writable(std::max<std::size_t>(parse_need_, 4096));
@@ -218,11 +239,17 @@ private:
     void on_recv(const Completion& c) {
         if (state_ != ConnState::Established) return;
         if (c.result < 0) {
-            if (c.result == -EAGAIN || c.result == -ECANCELED) { arm_recv(); return; }
+            if (c.result == -EAGAIN || c.result == -ECANCELED) {
+                arm_recv();
+                return;
+            }
             close(CloseReason::Error);
             return;
         }
-        if (c.result == 0) { close(CloseReason::PeerFin); return; }
+        if (c.result == 0) {
+            close(CloseReason::PeerFin);
+            return;
+        }
 
         read_buf_.commit(std::size_t(c.result));
         em_->stats().bytes_in += std::uint64_t(c.result);
@@ -236,7 +263,10 @@ private:
         for (;;) {
             auto pr = framer_.parse(read_buf_.readable());
             using Kind = typename std::decay_t<decltype(pr)>::Kind;
-            if (pr.kind == Kind::NeedMore) { parse_need_ = pr.need; break; }
+            if (pr.kind == Kind::NeedMore) {
+                parse_need_ = pr.need;
+                break;
+            }
             if (pr.kind == Kind::Error) {
                 ++em_->stats().frame_errors;
                 if (handlers_->on_error) handlers_->on_error(id_, pr.error);
@@ -262,7 +292,8 @@ private:
             handlers_->on_messages(id_, std::span<const Message>(batch_));
     }
 
-    // ---- send path -----------------------------------------------------------------
+    // ---- send path
+    // -----------------------------------------------------------------
     void flush_write() {
         if (write_inflight_ || write_buf_.empty()) return;
         if (state_ != ConnState::Established &&
@@ -289,40 +320,42 @@ private:
         if (backpressured_ &&
             write_buf_.size() <= params_.flow.write_low_watermark) {
             backpressured_ = false;
-            if (read_paused_) { read_paused_ = false; arm_recv(); }
+            if (read_paused_) {
+                read_paused_ = false;
+                arm_recv();
+            }
             if (handlers_->on_writable && state_ == ConnState::Established)
                 handlers_->on_writable(id_);
         }
-        if (!write_buf_.empty())
-            em_->note_write_pending(sink_);
+        if (!write_buf_.empty()) em_->note_write_pending(sink_);
     }
 
     SendResult apply_overflow(ByteSpan bytes) {
         ++em_->stats().write_hwm_hits;
         switch (params_.flow.on_overflow) {
-        case WriteOverflow::Disconnect:
-            close(CloseReason::WriteOverflow);
-            return SendResult::Closed;
-        case WriteOverflow::DropNewest:
-            ++em_->stats().write_drops;
-            return SendResult::Dropped;
-        case WriteOverflow::DropOldest: {
-            ++em_->stats().write_drops;
-            write_buf_.consume(bytes.size());   // drop the oldest prefix
-            auto w = write_buf_.writable(bytes.size());
-            std::memcpy(w.data(), bytes.data(), bytes.size());
-            write_buf_.commit(bytes.size());
-            em_->note_write_pending(sink_);
-            return SendResult::Queued;
-        }
-        case WriteOverflow::StopReading: {
-            pause_reads();
-            auto w = write_buf_.writable(bytes.size());
-            std::memcpy(w.data(), bytes.data(), bytes.size());
-            write_buf_.commit(bytes.size());
-            em_->note_write_pending(sink_);
-            return SendResult::Backpressured;
-        }
+            case WriteOverflow::Disconnect:
+                close(CloseReason::WriteOverflow);
+                return SendResult::Closed;
+            case WriteOverflow::DropNewest:
+                ++em_->stats().write_drops;
+                return SendResult::Dropped;
+            case WriteOverflow::DropOldest: {
+                ++em_->stats().write_drops;
+                write_buf_.consume(bytes.size());  // drop the oldest prefix
+                auto w = write_buf_.writable(bytes.size());
+                std::memcpy(w.data(), bytes.data(), bytes.size());
+                write_buf_.commit(bytes.size());
+                em_->note_write_pending(sink_);
+                return SendResult::Queued;
+            }
+            case WriteOverflow::StopReading: {
+                pause_reads();
+                auto w = write_buf_.writable(bytes.size());
+                std::memcpy(w.data(), bytes.data(), bytes.size());
+                write_buf_.commit(bytes.size());
+                em_->note_write_pending(sink_);
+                return SendResult::Backpressured;
+            }
         }
         return SendResult::Dropped;
     }
@@ -330,28 +363,29 @@ private:
     SendResult apply_overflow_parts(std::span<const ByteSpan> parts) {
         ++em_->stats().write_hwm_hits;
         switch (params_.flow.on_overflow) {
-        case WriteOverflow::Disconnect:
-            close(CloseReason::WriteOverflow);
-            return SendResult::Closed;
-        case WriteOverflow::DropNewest:
-            ++em_->stats().write_drops;
-            return SendResult::Dropped;
-        case WriteOverflow::DropOldest: {
-            ++em_->stats().write_drops;
-            for (auto p : parts) write_buf_.consume(p.size());
-            [[fallthrough]];
-        }
-        case WriteOverflow::StopReading:
-            if (params_.flow.on_overflow == WriteOverflow::StopReading)
-                pause_reads();
-            for (auto p : parts) {
-                auto w = write_buf_.writable(p.size());
-                std::memcpy(w.data(), p.data(), p.size());
-                write_buf_.commit(p.size());
+            case WriteOverflow::Disconnect:
+                close(CloseReason::WriteOverflow);
+                return SendResult::Closed;
+            case WriteOverflow::DropNewest:
+                ++em_->stats().write_drops;
+                return SendResult::Dropped;
+            case WriteOverflow::DropOldest: {
+                ++em_->stats().write_drops;
+                for (auto p : parts) write_buf_.consume(p.size());
+                [[fallthrough]];
             }
-            em_->note_write_pending(sink_);
-            return params_.flow.on_overflow == WriteOverflow::StopReading
-                       ? SendResult::Backpressured : SendResult::Queued;
+            case WriteOverflow::StopReading:
+                if (params_.flow.on_overflow == WriteOverflow::StopReading)
+                    pause_reads();
+                for (auto p : parts) {
+                    auto w = write_buf_.writable(p.size());
+                    std::memcpy(w.data(), p.data(), p.size());
+                    write_buf_.commit(p.size());
+                }
+                em_->note_write_pending(sink_);
+                return params_.flow.on_overflow == WriteOverflow::StopReading
+                           ? SendResult::Backpressured
+                           : SendResult::Queued;
         }
         return SendResult::Dropped;
     }
@@ -371,13 +405,15 @@ private:
         }
     }
 
-    // ---- idle timers ------------------------------------------------------------------
+    // ---- idle timers
+    // ------------------------------------------------------------------
     void arm_idle_timer() {
         if (params_.idle_read_timeout.count() == 0) return;
         if (idle_timer_.valid()) em_->cancel(idle_timer_);
         ConnId me = id_;
         EM* em = em_;
-        idle_timer_ = em_->after(params_.idle_read_timeout,
+        idle_timer_ = em_->after(
+            params_.idle_read_timeout,
             [em, me](TimerCtx) {
                 if (auto* c = Connection::resolve(*em, me))
                     c->close(CloseReason::IdleTimeout);
@@ -385,14 +421,18 @@ private:
             group_);
     }
 
-    // ---- teardown -------------------------------------------------------------------------
+    // ---- teardown
+    // -------------------------------------------------------------------------
     void teardown(CloseReason r) {
         if (fd_ >= 0) {
             em_->backend_detach(fd_);
             ::close(fd_);
             fd_ = -1;
         }
-        if (group_.valid()) { em_->cancel_group(group_); group_ = {}; }
+        if (group_.valid()) {
+            em_->cancel_group(group_);
+            group_ = {};
+        }
         ++em_->stats().conns_closed;
         if (handlers_->on_close) handlers_->on_close(id_, r);
         SinkHandle s = sink_;
@@ -437,7 +477,7 @@ private:
     std::vector<Message> batch_;
     void* owner_;
     void (*notify_)(void*, ConnId, CloseReason);
-    static inline char type_tag_{};   // one per <P, EM> instantiation
+    static inline char type_tag_{};  // one per <P, EM> instantiation
 };
 
-} // namespace afx
+}  // namespace afx

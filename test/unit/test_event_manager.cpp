@@ -26,7 +26,7 @@ TEST_CASE("EM defer runs at end of the same iteration") {
     std::vector<int> order;
     env.em.defer([&] {
         order.push_back(1);
-        env.em.defer([&] { order.push_back(3); });   // deferred goes next round
+        env.em.defer([&] { order.push_back(3); });  // deferred goes next round
     });
     env.em.defer([&] { order.push_back(2); });
     env.em.poll_once();
@@ -40,7 +40,7 @@ TEST_CASE("EM post is drained by the owning thread") {
     int n = 0;
     for (int i = 0; i < 10; ++i)
         CHECK(env.em.mailbox().post([&] { ++n; }) == PostResult::Ok);
-    CHECK(n == 0);                       // nothing ran yet
+    CHECK(n == 0);  // nothing ran yet
     env.em.poll_once();
     CHECK(n == 10);
 }
@@ -63,7 +63,7 @@ TEST_CASE("EM sheds work posted with an already-expired deadline") {
     TestEnv env;
     int ran = 0;
     Context c;
-    c.deadline = Deadline::at(TimePoint(-1ms));   // expired before posting
+    c.deadline = Deadline::at(TimePoint(-1ms));  // expired before posting
     CHECK(env.em.mailbox().post_with_ctx([&] { ++ran; }, c) == PostResult::Ok);
     env.em.poll_once();
     CHECK(ran == 0);
@@ -77,9 +77,7 @@ TEST_CASE("EM context does not leak between work items") {
     Context c;
     c.deadline = Deadline::at(TimePoint(1h));
     env.em.defer([&] { auto s = env.em.with_context(c); });
-    env.em.defer([&] {
-        leaked = detail::ambient_context().deadline.is_set();
-    });
+    env.em.defer([&] { leaked = detail::ambient_context().deadline.is_set(); });
     env.em.poll_once();
     CHECK(!leaked);
 }
@@ -87,9 +85,12 @@ TEST_CASE("EM context does not leak between work items") {
 TEST_CASE("EM stop() terminates run()") {
     TestEnv env;
     env.em.after(1ms, [&](TimerCtx) { env.em.stop(); });
-    env.em.mailbox().post([] {});         // ensure a wake is pending
+    env.em.mailbox().post([] {});  // ensure a wake is pending
     // run() under virtual clock would spin; drive iterations manually instead.
-    for (int i = 0; i < 4; ++i) { env.em.clock().advance(1ms); env.em.poll_once(); }
+    for (int i = 0; i < 4; ++i) {
+        env.em.clock().advance(1ms);
+        env.em.poll_once();
+    }
     CHECK(!env.em.is_running());
 }
 
@@ -124,7 +125,7 @@ TEST_CASE("EM mailbox on a dead EM reports Closed") {
         TestEnv env;
         mb = env.em.mailbox();
         CHECK(mb.post([] {}) == PostResult::Ok);
-    }                                       // EM destroyed; mb still valid
+    }  // EM destroyed; mb still valid
     CHECK(mb.post([] {}) == PostResult::Closed);
 }
 
@@ -142,7 +143,7 @@ TEST_CASE("EM watch/unwatch via sim backend readiness") {
     env.sim().deliver_watch(fd, Interest::Readable);
     mask = 0;
     env.em.poll_once();
-    CHECK(mask == 0);                       // detached: no more events
+    CHECK(mask == 0);  // detached: no more events
 }
 
 TEST_CASE("EM spin-until: idle loop stops reporting work") {

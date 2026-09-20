@@ -2,10 +2,10 @@
 // protocol. DESIGN.md §24 example. Run: ./echo_server [port]
 
 #include <array>
-#include <cstdio>
-#include <cstring>
-#include <cstdlib>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "afx/afx.hpp"
 
@@ -13,16 +13,16 @@ using namespace afx;
 
 // Protocol: [magic:1][len:2 BE][type:1] + body — echoes every frame.
 struct EchoHeader {
-    std::uint8_t  magic;
+    std::uint8_t magic;
     std::uint16_t len_be;
-    std::uint8_t  type;
+    std::uint8_t type;
 };
 struct EchoMsg {
     EchoHeader header;
-    ByteSpan   body;
+    ByteSpan body;
 };
 struct EchoProto {
-    using Header  = EchoHeader;
+    using Header = EchoHeader;
     using Message = EchoMsg;
     static constexpr std::size_t kHeaderSize = sizeof(EchoHeader);
     Result<void> validate(const EchoHeader& h) const {
@@ -54,8 +54,8 @@ int main(int argc, char** argv) {
             for (auto& m : batch) {
                 std::array<std::byte, sizeof(EchoHeader)> hdr;
                 std::memcpy(hdr.data(), &m.header, sizeof(hdr));
-                std::array<ByteSpan, 2> parts{
-                    ByteSpan(hdr.data(), hdr.size()), m.body};
+                std::array<ByteSpan, 2> parts{ByteSpan(hdr.data(), hdr.size()),
+                                              m.body};
                 c->send_scatter(parts);
             }
         };

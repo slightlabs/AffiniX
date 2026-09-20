@@ -1,12 +1,12 @@
 #include <doctest/doctest.h>
 
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <atomic>
 #include <cstring>
 #include <future>
-#include <sys/socket.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 #include "../proto.hpp"
@@ -15,10 +15,10 @@
 #include "afx/net/tcp_server.hpp"
 
 using namespace afx;
-using afx::test::EchoHeader;
-using afx::test::EchoProto;
-using afx::test::EchoMsg;
 using afx::test::echo_frame;
+using afx::test::EchoHeader;
+using afx::test::EchoMsg;
+using afx::test::EchoProto;
 
 // SimBackend connection lifecycle: accept -> recv -> echo -> close,
 // entirely under VirtualClock.
@@ -29,12 +29,15 @@ TEST_CASE("sim: server accepts, echoes, and closes deterministically") {
     Handlers<EchoProto> h;
     CloseReason closed{};
     int closes = 0;
-    h.on_close = [&](ConnId, CloseReason r) { closed = r; ++closes; };
+    h.on_close = [&](ConnId, CloseReason r) {
+        closed = r;
+        ++closes;
+    };
 
     ServerConfig cfg;
     cfg.bind = SockAddr::any(0);
     auto srv = env.em.make_server<EchoProto>(cfg, std::move(h));
-    REQUIRE(srv.has_value());            // open works under the sim env too
+    REQUIRE(srv.has_value());  // open works under the sim env too
 
     // Direct connection test through the sim: a virtual fd feeds bytes in and
     // captures whatever the connection writes out.
@@ -43,27 +46,27 @@ TEST_CASE("sim: server accepts, echoes, and closes deterministically") {
     std::vector<std::string> echoed;
     ch.on_messages = [&](ConnId id, std::span<const EchoMsg> batch) {
         for (auto& m : batch) {
-            echoed.emplace_back(
-                reinterpret_cast<const char*>(m.body.data()), m.body.size());
+            echoed.emplace_back(reinterpret_cast<const char*>(m.body.data()),
+                                m.body.size());
             auto* c = Connection<EchoProto, EM>::resolve(env.em, id);
             REQUIRE(c != nullptr);
             std::array<std::byte, sizeof(EchoHeader)> hdr;
             std::memcpy(hdr.data(), &m.header, sizeof(hdr));
-            std::array<ByteSpan, 2> parts{
-                ByteSpan(hdr.data(), hdr.size()), m.body};
+            std::array<ByteSpan, 2> parts{ByteSpan(hdr.data(), hdr.size()),
+                                          m.body};
             c->send_scatter(parts);
         }
     };
     auto conn = std::make_unique<Connection<EchoProto, EM>>(
-        env.em, cfd, ch, typename Connection<EchoProto, EM>::Params{},
-        nullptr, [](void*, ConnId, CloseReason) {});
+        env.em, cfd, ch, typename Connection<EchoProto, EM>::Params{}, nullptr,
+        [](void*, ConnId, CloseReason) {});
     conn->start(Peer{SockAddr::loopback(1234)});
 
     auto f = echo_frame("ping");
     env.sim().feed(cfd, ByteSpan(f.data(), f.size()));
-    env.em.poll_once();          // recv completion -> on_messages -> send queued
-    env.em.poll_once();          // stage 6 -> submit_sendv -> completion
-    env.em.poll_once();          // send completion drained
+    env.em.poll_once();  // recv completion -> on_messages -> send queued
+    env.em.poll_once();  // stage 6 -> submit_sendv -> completion
+    env.em.poll_once();  // send completion drained
 
     auto& out = env.sim().sent(cfd);
     REQUIRE(out.size() == f.size());
@@ -93,15 +96,19 @@ TEST_CASE("loopback: TcpServer echoes frames to a real client") {
                 if (!c) continue;
                 std::array<std::byte, sizeof(EchoHeader)> hdr;
                 std::memcpy(hdr.data(), &m.header, sizeof(hdr));
-                std::array<ByteSpan, 2> parts{
-                    ByteSpan(hdr.data(), hdr.size()), m.body};
+                std::array<ByteSpan, 2> parts{ByteSpan(hdr.data(), hdr.size()),
+                                              m.body};
                 c->send_scatter(parts);
             }
         };
         ServerConfig cfg;
         cfg.bind = SockAddr::loopback(0);
         auto srv = em.make_server<EchoProto>(cfg, std::move(h));
-        if (!srv) { failed = true; em.stop(); return; }
+        if (!srv) {
+            failed = true;
+            em.stop();
+            return;
+        }
         port_p.set_value((*srv)->bound_addr().port());
         em.run();
     });

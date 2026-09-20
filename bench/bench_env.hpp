@@ -26,4 +26,4 @@ inline ankerl::nanobench::Bench make_bench() {
     return b;
 }
 
-} // namespace afx::bench
+}  // namespace afx::bench

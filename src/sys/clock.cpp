@@ -1,8 +1,8 @@
 #include "afx/sys/clock.hpp"
 
 #if defined(__x86_64__) || defined(__i386__)
-#  include <cpuid.h>
-#  include <x86intrin.h>
+#include <cpuid.h>
+#include <x86intrin.h>
 #endif
 
 #include <fstream>
@@ -14,7 +14,8 @@ std::uint64_t rdtsc() noexcept {
 #if defined(__x86_64__) || defined(__i386__)
     return __rdtsc();
 #else
-    return static_cast<std::uint64_t>(SteadyClock::now().time_since_epoch().count());
+    return static_cast<std::uint64_t>(
+        SteadyClock::now().time_since_epoch().count());
 #endif
 }
 
@@ -25,7 +26,7 @@ bool tsc_invariant() noexcept {
     bool constant = false, nonstop = false;
     while (std::getline(f, line)) {
         if (line.find("constant_tsc") != std::string::npos) constant = true;
-        if (line.find("nonstop_tsc") != std::string::npos)  nonstop  = true;
+        if (line.find("nonstop_tsc") != std::string::npos) nonstop = true;
         if (constant && nonstop) return true;
     }
     return false;
@@ -51,4 +52,4 @@ std::uint64_t tsc_hz() noexcept {
 #endif
 }
 
-} // namespace afx
+}  // namespace afx

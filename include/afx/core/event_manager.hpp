@@ -29,8 +29,10 @@ namespace afx {
 // Net-layer forward declarations (factories are defined in net/*.hpp).
 struct ServerConfig;
 struct ClientConfig;
-template <class P, class EM> class TcpServer;
-template <class P, class EM> class TcpClient;
+template <class P, class EM>
+class TcpServer;
+template <class P, class EM>
+class TcpClient;
 
 enum class WaitStrategy : std::uint8_t {
     Block,          // sleep in the backend until an event or deadline
@@ -39,7 +41,7 @@ enum class WaitStrategy : std::uint8_t {
 };
 
 enum class CallbackErrorPolicy : std::uint8_t {
-    RouteToHandler,     // swallow into on_error / stats (default)
+    RouteToHandler,  // swallow into on_error / stats (default)
     CloseConnection,
     Terminate,
 };
@@ -47,42 +49,42 @@ enum class CallbackErrorPolicy : std::uint8_t {
 enum class NumaPolicy : std::uint8_t { Default, LocalAlloc, Interleave };
 
 struct MemoryConfig {
-    std::size_t arena_bytes      = 8u << 20;
+    std::size_t arena_bytes = 8u << 20;
     std::size_t read_buffer_size = 64u << 10;
-    bool        hugepages        = false;
-    NumaPolicy  numa             = NumaPolicy::Default;
-    bool        prefault         = true;
+    bool hugepages = false;
+    NumaPolicy numa = NumaPolicy::Default;
+    bool prefault = true;
 };
 
 struct EventManagerConfig {
-    std::string   name;
-    WaitStrategy  wait          = WaitStrategy::Block;
-    Nanos         spin_budget   = 50us;
-    Nanos         timer_tick    = 1ms;
-    std::size_t   max_io_events = 256;
-    std::size_t   max_itc_batch = 128;
-    std::size_t   max_defer_batch = 256;
-    BackendKind   backend       = BackendKind::Auto;
-    MemoryConfig  memory{};
+    std::string name;
+    WaitStrategy wait = WaitStrategy::Block;
+    Nanos spin_budget = 50us;
+    Nanos timer_tick = 1ms;
+    std::size_t max_io_events = 256;
+    std::size_t max_itc_batch = 128;
+    std::size_t max_defer_batch = 256;
+    BackendKind backend = BackendKind::Auto;
+    MemoryConfig memory{};
     CallbackErrorPolicy on_callback_error = CallbackErrorPolicy::RouteToHandler;
     // appended fields (config aggregates grow by appending, §26.3)
-    std::size_t   mailbox_capacity = 4096;          // power of two
+    std::size_t mailbox_capacity = 4096;  // power of two
     OverflowPolicy mailbox_overflow = OverflowPolicy::Fail;
-    Nanos         stall_threshold = Nanos::zero();  // 0 = detector off
+    Nanos stall_threshold = Nanos::zero();  // 0 = detector off
 };
 
 struct IterationInfo {
     std::uint64_t iteration;
-    bool          did_mailbox = false;
-    bool          did_timers  = false;
-    bool          did_io      = false;
-    bool          did_defer   = false;
-    Nanos         duration{};
+    bool did_mailbox = false;
+    bool did_timers = false;
+    bool did_io = false;
+    bool did_defer = false;
+    Nanos duration{};
 };
 
 // RAII scope installing a Context as the EM's ambient context.
 class ContextScope {
-public:
+  public:
     ContextScope(const ContextScope&) = delete;
     ContextScope& operator=(const ContextScope&) = delete;
     ~ContextScope() { restore(); }
@@ -96,38 +98,42 @@ public:
         *slot_ = prev_;
         detail::tls_ambient = tls_prev_;
     }
-private:
+
+  private:
     ContextScope(Context* slot, const Context& next)
-        : slot_(slot), prev_(*slot), tls_prev_(detail::tls_ambient),
+        : slot_(slot),
+          prev_(*slot),
+          tls_prev_(detail::tls_ambient),
           active_(true) {
         *slot = next;
         detail::tls_ambient = slot;
     }
     Context* slot_;
-    Context  prev_;
+    Context prev_;
     const Context* tls_prev_;
-    bool     active_;
-    template <class, class> friend class BasicEventManager;
+    bool active_;
+    template <class, class>
+    friend class BasicEventManager;
 };
 
 // ---------------------------------------------------------------------------
 
 template <class Clock = SteadyClock, class Backend = EpollBackend>
 class BasicEventManager {
-public:
-    using Task        = afx::Task;
-    using IoFn        = InlineFn<void(IoId, std::int32_t ready_mask), 48>;
-    using IdleFn      = InlineFn<void(), 48>;
+  public:
+    using Task = afx::Task;
+    using IoFn = InlineFn<void(IoId, std::int32_t ready_mask), 48>;
+    using IdleFn = InlineFn<void(), 48>;
     using IterationFn = InlineFn<void(const IterationInfo&), 48>;
 
     // A sink is where a completion lands: conn ops and raw watches alike.
     struct SinkEntry {
         void* obj = nullptr;
         void (*fn)(void*, OpKind, const Completion&) = nullptr;
-        void (*teardown)(void*) = nullptr;      // on slot release
-        const void* type_tag = nullptr;         // per-subsystem identity check
-        Context ctx{};                          // ambient for dispatches
-        bool    write_pending = false;
+        void (*teardown)(void*) = nullptr;  // on slot release
+        const void* type_tag = nullptr;     // per-subsystem identity check
+        Context ctx{};                      // ambient for dispatches
+        bool write_pending = false;
     };
     using SinkHandle = Handle<struct SinkTag_>;
 
@@ -172,8 +178,7 @@ public:
         // ownership of the loop for AFX_ASSERT_CURRENT.
         owner_ = std::this_thread::get_id();
         running_.store(true, std::memory_order_release);
-        while (!stop_.load(std::memory_order_acquire))
-            poll_once();
+        while (!stop_.load(std::memory_order_acquire)) poll_once();
         running_.store(false, std::memory_order_release);
     }
 
@@ -184,43 +189,47 @@ public:
         now_ = clock_.now();
         auto iter_start = now_;
 
-        info.did_mailbox = drain_mailbox();          // 1
-        info.did_timers  = expire_timers();          // 2
-        Nanos timeout    = wait_timeout();           // 3
-        int nio          = backend_.wait(comp_buf_, timeout);
-        if (blocked_)                                // publish Running again
+        info.did_mailbox = drain_mailbox();  // 1
+        info.did_timers = expire_timers();   // 2
+        Nanos timeout = wait_timeout();      // 3
+        int nio = backend_.wait(comp_buf_, timeout);
+        if (blocked_)  // publish Running again
             mb_->state.store(MailboxState::Running, std::memory_order_seq_cst);
-        dispatch_completions(nio);                   // 4
-        info.did_io      = nio > 0;
-        info.did_defer   = run_deferred();           // 5
-        flush_writes();                              // 6
-        bookkeeping(info, iter_start);               // 7
+        dispatch_completions(nio);  // 4
+        info.did_io = nio > 0;
+        info.did_defer = run_deferred();  // 5
+        flush_writes();                   // 6
+        bookkeeping(info, iter_start);    // 7
         return info.did_mailbox || info.did_timers || info.did_io ||
                info.did_defer;
     }
 
-    void stop() noexcept {           // thread-safe, idempotent
+    void stop() noexcept {  // thread-safe, idempotent
         stop_.store(true, std::memory_order_release);
         backend_.wake();
     }
-    bool is_current() const noexcept { return owner_ == std::this_thread::get_id(); }
-    bool is_running() const noexcept { return running_.load(std::memory_order_acquire); }
+    bool is_current() const noexcept {
+        return owner_ == std::this_thread::get_id();
+    }
+    bool is_running() const noexcept {
+        return running_.load(std::memory_order_acquire);
+    }
 
     // ---- clock --------------------------------------------------------------
-    TimePoint now() const noexcept { return now_; }     // cached per iteration
+    TimePoint now() const noexcept { return now_; }  // cached per iteration
     Clock& clock() noexcept { return clock_; }
     Backend& backend() noexcept { return backend_; }
 
     // ---- work ---------------------------------------------------------------
-    void defer(Task&& t) {                 // same thread, end of iteration
+    void defer(Task&& t) {  // same thread, end of iteration
         AFX_ASSERT_CURRENT(*this);
         defer_next_.push_back(std::move(t));
     }
-    PostResult post(Task&& t) {            // thread-safe, from anywhere
+    PostResult post(Task&& t) {  // thread-safe, from anywhere
         return mb_->ring.try_push(
                    PostedItem{std::move(t), detail::ambient_context(), 0})
-               ? (post_wake(), PostResult::Ok)
-               : post_full(std::move(t));
+                   ? (post_wake(), PostResult::Ok)
+                   : post_full(std::move(t));
     }
     Mailbox mailbox() const noexcept { return Mailbox(mb_); }
 
@@ -231,19 +240,19 @@ public:
         return ContextScope(&ctx_, std::move(c));
     }
 
-    // ---- timers ---------------------------------------------------------------
+    // ---- timers
+    // ---------------------------------------------------------------
     TimerId after(Duration d, TimerFn&& fn, TimerGroup g = {}) {
         return arm(now_ + d, Duration{}, RepeatMode::FixedRate, std::move(fn),
                    g, /*precise=*/false);
     }
     TimerId at(TimePoint t, TimerFn&& fn, TimerGroup g = {}) {
-        return arm(t, Duration{}, RepeatMode::FixedRate, std::move(fn),
-                   g, /*precise=*/true);
+        return arm(t, Duration{}, RepeatMode::FixedRate, std::move(fn), g,
+                   /*precise=*/true);
     }
     TimerId every(Duration period, TimerFn&& fn,
                   Duration initial_delay = Duration::zero(),
-                  RepeatMode mode = RepeatMode::FixedRate,
-                  TimerGroup g = {}) {
+                  RepeatMode mode = RepeatMode::FixedRate, TimerGroup g = {}) {
         Duration d = initial_delay.count() ? initial_delay : period;
         return arm(now_ + d, period, mode, std::move(fn), g, false);
     }
@@ -253,7 +262,7 @@ public:
         if (!n || n->cancelled) return false;
         n->cancelled = true;
         unlink_timer(*n);
-        detail::glist_unlink(n);         // dead timers leave their group
+        detail::glist_unlink(n);  // dead timers leave their group
         n->group = {};
         dead_timers_.push_back(id);
         ++stats_.timers_cancelled;
@@ -300,19 +309,21 @@ public:
         return n;
     }
 
-    // ---- raw fd escape hatch --------------------------------------------------
+    // ---- raw fd escape hatch
+    // --------------------------------------------------
     Result<IoId> watch(int fd, Interest i, IoFn&& fn) {
         AFX_ASSERT_CURRENT(*this);
         auto* box = new IoFn(std::move(fn));
-        auto [h, s] = sinks_.emplace(SinkEntry{
-            box,
-            [](void* p, OpKind, const Completion& c) {
-                auto* b = static_cast<IoFn*>(p);
-                // recover the IoId: sink handle == the completion's tag
-                (*b)(IoId{c.user.slot(), c.user.gen()}, c.result);
-            },
-            [](void* p) { delete static_cast<IoFn*>(p); },
-            nullptr, ctx_, false});
+        auto [h, s] = sinks_.emplace(
+            SinkEntry{box,
+                      [](void* p, OpKind, const Completion& c) {
+                          auto* b = static_cast<IoFn*>(p);
+                          // recover the IoId: sink handle == the completion's
+                          // tag
+                          (*b)(IoId{c.user.slot(), c.user.gen()}, c.result);
+                      },
+                      [](void* p) { delete static_cast<IoFn*>(p); }, nullptr,
+                      ctx_, false});
         UserData ud = UserData::make(std::uint8_t(OpKind::Watch), h.idx, h.gen);
         auto r = backend_.attach(fd, i, ud);
         if (!r) {
@@ -327,7 +338,8 @@ public:
         auto it = watch_fds_.find(key_of(SinkHandle{id.idx, id.gen}));
         if (it == watch_fds_.end())
             return make_error(ErrorCategory::Internal, Err::NotFound);
-        UserData ud = UserData::make(std::uint8_t(OpKind::Watch), id.idx, id.gen);
+        UserData ud =
+            UserData::make(std::uint8_t(OpKind::Watch), id.idx, id.gen);
         return backend_.modify(it->second, i, ud);
     }
 
@@ -342,15 +354,15 @@ public:
         sinks_.release({id.idx, id.gen});
     }
 
-    // ---- net-layer plumbing (used by Connection / TcpServer / TcpClient) ------
-    // Register a completion sink; returns the handle encoded into UserData.
+    // ---- net-layer plumbing (used by Connection / TcpServer / TcpClient)
+    // ------ Register a completion sink; returns the handle encoded into
+    // UserData.
     SinkHandle register_sink(void* obj,
                              void (*fn)(void*, OpKind, const Completion&),
                              void (*teardown)(void*) = nullptr,
-                             Context ctx = {},
-                             const void* type_tag = nullptr) {
-        auto [h, s] = sinks_.emplace(
-            SinkEntry{obj, fn, teardown, type_tag, ctx, false});
+                             Context ctx = {}, const void* type_tag = nullptr) {
+        auto [h, s] =
+            sinks_.emplace(SinkEntry{obj, fn, teardown, type_tag, ctx, false});
         return h;
     }
     void release_sink(SinkHandle h) noexcept {
@@ -375,7 +387,8 @@ public:
     Result<void> submit_send(SinkHandle h, int fd, ByteSpan b) {
         return backend_.submit_send(tag_of(h, OpKind::Send), fd, b);
     }
-    Result<void> submit_sendv(SinkHandle h, int fd, std::span<const ByteSpan> iov) {
+    Result<void> submit_sendv(SinkHandle h, int fd,
+                              std::span<const ByteSpan> iov) {
         return backend_.submit_sendv(tag_of(h, OpKind::Send), fd, iov);
     }
     Result<void> submit_accept(SinkHandle h, int listen_fd) {
@@ -392,15 +405,17 @@ public:
         return backend_.attach(fd, i, tag_of(h, k));
     }
 
-    // ---- hooks ----------------------------------------------------------------
-    void on_idle(IdleFn&& f)       { idle_fn_ = std::move(f); }
+    // ---- hooks
+    // ----------------------------------------------------------------
+    void on_idle(IdleFn&& f) { idle_fn_ = std::move(f); }
     void on_iteration(IterationFn&& f) { iter_fn_ = std::move(f); }
 
     // Ownership: servers/clients made by make_server/make_client are owned by
     // the EM and destroyed with it (§7.2).
     void own(void* p, void (*del)(void*)) { owned_.emplace_back(p, del); }
 
-    // ---- introspection ----------------------------------------------------------
+    // ---- introspection
+    // ----------------------------------------------------------
     const Stats& stats() const noexcept { return stats_; }
     Stats& stats() noexcept { return stats_; }
     LatencyMetrics& latency() noexcept { return latency_; }
@@ -415,8 +430,9 @@ public:
     Result<TcpClient<P, BasicEventManager>*> make_client(ClientConfig,
                                                          Handlers&&);
 
-private:
-    // ---- stages -----------------------------------------------------------------
+  private:
+    // ---- stages
+    // -----------------------------------------------------------------
     bool drain_mailbox() {
         std::size_t n = 0;
         PostedItem it;
@@ -426,8 +442,9 @@ private:
             if (it.ctx.deadline.expired(now_)) {
                 // §7.4: shed work whose caller has already given up.
                 ++stats_.deadline_expired_before_start;
-                recorder_.record(EventKind::DeadlineExpired, 0,
-                                 std::uint32_t(it.ctx.deadline.remaining(now_).count()));
+                recorder_.record(
+                    EventKind::DeadlineExpired, 0,
+                    std::uint32_t(it.ctx.deadline.remaining(now_).count()));
                 continue;
             }
             run_guarded(it.ctx, std::move(it.fn));
@@ -447,12 +464,18 @@ private:
     }
 
     void fire_timer(TimerNode& n) {
-        if (n.cancelled) { dead_timers_.push_back(n.id); return; }
+        if (n.cancelled) {
+            dead_timers_.push_back(n.id);
+            return;
+        }
         TimerCtx tc{n.id, n.expiry, now_, 0};
         bool repeats = n.period.count() > 0;
         if (repeats && n.mode == RepeatMode::FixedRate) {
             TimePoint next = n.expiry + n.period;
-            while (next <= now_) { next += n.period; ++tc.missed; }
+            while (next <= now_) {
+                next += n.period;
+                ++tc.missed;
+            }
             stats_.timer_coalesced += tc.missed;
             n.expiry = next;
             n.expiry_tick = wheel_.tick_of(next);
@@ -462,8 +485,8 @@ private:
         recorder_.record(EventKind::TimerFire, n.id.idx,
                          std::uint32_t(tc.lateness().count() & 0xFFFFFFFF),
                          tc.missed, n.ctx.trace.short_id());
-        latency_.timer_lateness_ns.record(
-            std::uint64_t(std::max<Nanos>(tc.lateness(), Nanos::zero()).count()));
+        latency_.timer_lateness_ns.record(std::uint64_t(
+            std::max<Nanos>(tc.lateness(), Nanos::zero()).count()));
         run_guarded(n.ctx, [&]() { n.fn(tc); });
         if (repeats && n.mode == RepeatMode::FixedDelay && !n.cancelled) {
             n.expiry = now_ + n.period;
@@ -494,7 +517,10 @@ private:
     // lifetime property, so reschedule() must not eject the timer from its
     // TimerGroup. Cancel paths unlink the group list separately.
     void unlink_timer(TimerNode& n) {
-        if (n.in_heap) heap_.remove(n); else wheel_.unlink(n);
+        if (n.in_heap)
+            heap_.remove(n);
+        else
+            wheel_.unlink(n);
     }
 
     TimerId arm(TimePoint expiry, Duration period, RepeatMode mode,
@@ -506,10 +532,13 @@ private:
         n->period = period;
         n->mode = mode;
         n->fn = std::move(fn);
-        n->ctx = ctx_;                       // context follows into timers
+        n->ctx = ctx_;  // context follows into timers
         n->precise_ = precise;
         if (g.valid())
-            if (TimerGroupState* gs = groups_.get(g)) { gs->add(*n); n->group = g; }
+            if (TimerGroupState* gs = groups_.get(g)) {
+                gs->add(*n);
+                n->group = g;
+            }
         insert_timer(*n);
         ++stats_.timers_armed;
         return id;
@@ -520,22 +549,27 @@ private:
         // budget after last useful work has elapsed (§8).
         bool may_block;
         switch (config_.wait) {
-        case WaitStrategy::Spin:  may_block = false; break;
-        case WaitStrategy::Block: may_block = true;  break;
-        case WaitStrategy::SpinThenBlock:
-        default:
-            may_block = now_ >= spin_until_;
-            break;
+            case WaitStrategy::Spin:
+                may_block = false;
+                break;
+            case WaitStrategy::Block:
+                may_block = true;
+                break;
+            case WaitStrategy::SpinThenBlock:
+            default:
+                may_block = now_ >= spin_until_;
+                break;
         }
         if (!defer_next_.empty()) may_block = false;
-        if (!mb_->ring.empty())   may_block = false;
+        if (!mb_->ring.empty()) may_block = false;
 
         Nanos timeout = Nanos::zero();
         if (may_block) {
             // Arm/block protocol, consumer side (§8.1).
             mb_->state.store(MailboxState::Blocked, std::memory_order_seq_cst);
             if (!mb_->ring.empty()) {
-                mb_->state.store(MailboxState::Running, std::memory_order_seq_cst);
+                mb_->state.store(MailboxState::Running,
+                                 std::memory_order_seq_cst);
                 return Nanos::zero();
             }
             ++stats_.blocks;
@@ -564,10 +598,9 @@ private:
             const Completion& c = comp_buf_[i];
             SinkHandle h{c.user.slot(), c.user.gen()};
             SinkEntry* s = sinks_.get(h);
-            if (!s) continue;      // object closed while completion in flight
-            run_guarded(s->ctx, [&] {
-                s->fn(s->obj, OpKind(c.user.kind()), c);
-            });
+            if (!s) continue;  // object closed while completion in flight
+            run_guarded(s->ctx,
+                        [&] { s->fn(s->obj, OpKind(c.user.kind()), c); });
         }
     }
 
@@ -578,7 +611,7 @@ private:
         std::size_t n = 0;
         for (auto& t : defer_run_) {
             if (n++ >= config_.max_defer_batch) {
-                defer_next_.push_back(std::move(t));   // remainder next round
+                defer_next_.push_back(std::move(t));  // remainder next round
                 continue;
             }
             run_guarded(ctx_, std::move(t));
@@ -614,8 +647,8 @@ private:
             if (idle_fn_) idle_fn_();
         }
         info.duration = clock_.now_uncached() - iter_start;
-        latency_.iteration_ns.record(
-            std::uint64_t(std::max<Nanos>(info.duration, Nanos::zero()).count()));
+        latency_.iteration_ns.record(std::uint64_t(
+            std::max<Nanos>(info.duration, Nanos::zero()).count()));
         if (iter_fn_) iter_fn_(info);
 
         // Deferred reclamation (§13): slots released this iteration only
@@ -627,7 +660,8 @@ private:
         groups_.reclaim();
     }
 
-    // ---- callback error policy --------------------------------------------------
+    // ---- callback error policy
+    // --------------------------------------------------
     template <class F>
     void run_guarded(const Context& c, F&& fn) {
         auto scope = with_context(c);
@@ -668,18 +702,20 @@ private:
     PostResult post_full(Task&& t) {
         ++stats_.mailbox_full;
         switch (config_.mailbox_overflow) {
-        case OverflowPolicy::Fail:  return PostResult::Full;
-        case OverflowPolicy::Abort: std::abort();
-        case OverflowPolicy::SpinRetry:
-            for (;;) {
-                if (mb_->ring.try_push(
-                        PostedItem{std::move(t), detail::ambient_context(), 0})) {
-                    post_wake();
-                    return PostResult::Ok;
+            case OverflowPolicy::Fail:
+                return PostResult::Full;
+            case OverflowPolicy::Abort:
+                std::abort();
+            case OverflowPolicy::SpinRetry:
+                for (;;) {
+                    if (mb_->ring.try_push(PostedItem{
+                            std::move(t), detail::ambient_context(), 0})) {
+                        post_wake();
+                        return PostResult::Ok;
+                    }
+                    if (mb_->dead.load(std::memory_order_acquire))
+                        return PostResult::Closed;
                 }
-                if (mb_->dead.load(std::memory_order_acquire))
-                    return PostResult::Closed;
-            }
         }
         return PostResult::Full;
     }
@@ -689,7 +725,8 @@ private:
             backend_.wake();
     }
 
-    // ---- members ------------------------------------------------------------------
+    // ---- members
+    // ------------------------------------------------------------------
     EventManagerConfig config_;
     Clock clock_;
     Backend backend_;
@@ -708,7 +745,7 @@ private:
     }
 
     HandleTable<SinkEntry, SinkHandle> sinks_;
-    std::unordered_map<std::uint64_t, int> watch_fds_;   // watch -> fd
+    std::unordered_map<std::uint64_t, int> watch_fds_;  // watch -> fd
     std::vector<SinkHandle> pending_writes_;
 
     std::shared_ptr<MailboxImpl> mb_;
@@ -726,7 +763,7 @@ private:
     FlightRecorder recorder_;
 
     std::thread::id owner_;
-    TimePoint spin_until_{};   // epoch default: blocks until first work
+    TimePoint spin_until_{};  // epoch default: blocks until first work
     bool blocked_ = false;
 };
 
@@ -734,4 +771,4 @@ private:
 // Tests instantiate BasicEventManager<VirtualClock, SimBackend>.
 using EventManager = BasicEventManager<SteadyClock, EpollBackend>;
 
-} // namespace afx
+}  // namespace afx

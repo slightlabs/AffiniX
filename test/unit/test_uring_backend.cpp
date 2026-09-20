@@ -7,18 +7,18 @@
 
 #ifdef AFX_WITH_URING
 
+#include <linux/io_uring.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <chrono>
 #include <cstring>
 #include <thread>
 #include <unordered_map>
-#include <linux/io_uring.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include "afx/backend/uring.hpp"
 #include "afx/core/event_manager.hpp"
-#include "afx/net/socket.hpp"
 #include "afx/net/sock_addr.hpp"
+#include "afx/net/socket.hpp"
 
 using namespace afx;
 using namespace std::chrono_literals;
@@ -59,8 +59,11 @@ struct SocketPair {
     int a = -1, b = -1;
     SocketPair() {
         int fds[2];
-        if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
-                         0, fds) == 0) { a = fds[0]; b = fds[1]; }
+        if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0,
+                         fds) == 0) {
+            a = fds[0];
+            b = fds[1];
+        }
     }
     ~SocketPair() {
         if (a >= 0) ::close(a);
@@ -68,16 +71,16 @@ struct SocketPair {
     }
 };
 
-#define AFX_URING_OR_SKIP(be)                                                \
-    auto be##_res = UringBackend::create();                                  \
-    if (!be##_res) {                                                         \
-        MESSAGE("io_uring unavailable (", be##_res.error().code,             \
-                ") — skipping");                                             \
-        return;                                                              \
-    }                                                                        \
+#define AFX_URING_OR_SKIP(be)                                    \
+    auto be##_res = UringBackend::create();                      \
+    if (!be##_res) {                                             \
+        MESSAGE("io_uring unavailable (", be##_res.error().code, \
+                ") — skipping");                                 \
+        return;                                                  \
+    }                                                            \
     auto& be = *be##_res
 
-} // namespace
+}  // namespace
 
 TEST_CASE("uring backend: ring setup and feature probe") {
     auto caps = UringBackend::probe();
@@ -103,7 +106,8 @@ TEST_CASE("uring backend: recv and send over socketpair") {
     REQUIRE(sp.a >= 0);
 
     std::byte buf[16]{};
-    REQUIRE(b.submit_recv(tag(OpKind::Recv), sp.a, MutByteSpan(buf)).has_value());
+    REQUIRE(
+        b.submit_recv(tag(OpKind::Recv), sp.a, MutByteSpan(buf)).has_value());
 
     const char msg[] = "hello";
     REQUIRE(::write(sp.b, msg, sizeof(msg)) == ssize_t(sizeof(msg)));
@@ -210,7 +214,7 @@ TEST_CASE("uring backend: accept and connect on loopback") {
 
     CompStash stash;
     Completion conn = find_completion(b, stash, tag(OpKind::Connect).raw);
-    Completion acc  = find_completion(b, stash, tag(OpKind::Accept).raw);
+    Completion acc = find_completion(b, stash, tag(OpKind::Accept).raw);
     REQUIRE(conn.user.raw == tag(OpKind::Connect).raw);
     CHECK(conn.result == 0);
     REQUIRE(acc.user.raw == tag(OpKind::Accept).raw);
@@ -250,7 +254,8 @@ TEST_CASE("uring backend: provided-buffer ring recv") {
     REQUIRE(sp.a >= 0);
 
     std::byte buf[16]{};
-    REQUIRE(b.submit_recv(tag(OpKind::Recv), sp.a, MutByteSpan(buf)).has_value());
+    REQUIRE(
+        b.submit_recv(tag(OpKind::Recv), sp.a, MutByteSpan(buf)).has_value());
 
     const char msg[] = "ringbuf";
     REQUIRE(::write(sp.b, msg, sizeof(msg)) == ssize_t(sizeof(msg)));
@@ -281,14 +286,14 @@ TEST_CASE("uring backend: idle wait returns at deadline; wake interrupts") {
     n = b.wait(out, 10s);
     dt = std::chrono::steady_clock::now() - t0;
     waker.join();
-    CHECK(dt < 5s);   // returned early, not at the 10s deadline
+    CHECK(dt < 5s);  // returned early, not at the 10s deadline
 }
 
 TEST_CASE("uring backend: drives a BasicEventManager end to end") {
     AFX_URING_OR_SKIP(b);
     using EM = BasicEventManager<SteadyClock, UringBackend>;
-    EM em(EventManagerConfig{.wait = WaitStrategy::Spin},
-          SteadyClock{}, std::move(b));
+    EM em(EventManagerConfig{.wait = WaitStrategy::Spin}, SteadyClock{},
+          std::move(b));
 
     SocketPair sp;
     REQUIRE(sp.a >= 0);
@@ -325,9 +330,12 @@ TEST_CASE("auto backend: picks a working backend and logs its kind") {
     for (int i = 0; i < 60 && !got; ++i) {
         int n = a.wait(out, 50ms);
         for (int j = 0; j < n; ++j)
-            if (out[j].user.raw == r.raw) { got = true; CHECK(out[j].result == 1); }
+            if (out[j].user.raw == r.raw) {
+                got = true;
+                CHECK(out[j].result == 1);
+            }
     }
     CHECK(got);
 }
 
-#endif // AFX_WITH_URING
+#endif  // AFX_WITH_URING

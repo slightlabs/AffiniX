@@ -40,12 +40,12 @@ TEST_CASE("invariant: Block loop sleeps when idle and wakes on post") {
     const auto deadline_tp = std::chrono::steady_clock::now() + 2s;
     while (!ran.load() && std::chrono::steady_clock::now() < deadline_tp)
         std::this_thread::sleep_for(1ms);
-    CHECK(ran.load());                       // the wake was not lost
+    CHECK(ran.load());  // the wake was not lost
 
     em.stop();
     t.join();
-    CHECK(em.stats().blocks > 0);            // it genuinely slept
-    CHECK(em.stats().wakeups > 0);           // and the wake was observed
+    CHECK(em.stats().blocks > 0);   // it genuinely slept
+    CHECK(em.stats().wakeups > 0);  // and the wake was observed
 }
 
 TEST_CASE("invariant: SpinThenBlock escapes the spin budget then blocks") {
@@ -67,13 +67,13 @@ TEST_CASE("invariant: SpinThenBlock escapes the spin budget then blocks") {
 
     for (int i = 0; i < 64 && fired < 3; ++i) em.poll_once();
     CHECK(fired >= 3);
-    CHECK(em.stats().blocks > 0);     // it genuinely slept to the deadline
+    CHECK(em.stats().blocks > 0);  // it genuinely slept to the deadline
 
     // Work arriving while it would block must still be handled: a posted
     // task runs on the next iteration, never stranded behind the wake.
     int ran = 0;
     (void)em.post([&] { ++ran; });
-    em.at(em.clock().now() + 10ms, [](TimerCtx) {});   // bound this wait too
+    em.at(em.clock().now() + 10ms, [](TimerCtx) {});  // bound this wait too
     em.poll_once();
     CHECK(ran == 1);
 }

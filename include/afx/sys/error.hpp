@@ -10,13 +10,13 @@ namespace afx {
 // user code. Sys-category errors carry the errno value as `code`.
 enum class ErrorCategory : std::uint16_t {
     Ok = 0,
-    Sys,       // errno-derived
-    Net,       // connect refused, reset, dns...
-    Frame,     // protocol/framing errors
-    Config,    // bad configuration
-    Itc,       // mailbox full, queue overflow...
-    Internal,  // framework invariant violated
-    Cancelled, // deadline expired / stopped
+    Sys,        // errno-derived
+    Net,        // connect refused, reset, dns...
+    Frame,      // protocol/framing errors
+    Config,     // bad configuration
+    Itc,        // mailbox full, queue overflow...
+    Internal,   // framework invariant violated
+    Cancelled,  // deadline expired / stopped
 };
 
 struct Error {
@@ -63,6 +63,8 @@ constexpr Error make_error(ErrorCategory c, Err e) noexcept {
 inline Error errno_error(int e) noexcept {
     return Error{static_cast<std::uint16_t>(e & 0xFFFF), ErrorCategory::Sys};
 }
-inline Error last_errno() noexcept { return errno_error(errno); }
+inline Error last_errno() noexcept {
+    return errno_error(errno);
+}
 
-} // namespace afx
+}  // namespace afx

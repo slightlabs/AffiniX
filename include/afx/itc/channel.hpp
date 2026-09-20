@@ -31,17 +31,19 @@ struct ChannelState {
     MpscRing<T> mpsc;
     std::atomic<bool> drain_posted{false};
 
-    ~ChannelState() { if (teardown) teardown(cb_obj); }
+    ~ChannelState() {
+        if (teardown) teardown(cb_obj);
+    }
 
     // Receiver side
     Mailbox target{};
-    void*   cb_obj = nullptr;    // type-erased batch callback
+    void* cb_obj = nullptr;  // type-erased batch callback
     void (*cb)(void*, std::span<const T>) = nullptr;
     void (*teardown)(void*) = nullptr;
 
     bool push(T&& v) {
         bool ok = kind == ChannelKind::SPSC ? spsc.try_push(std::move(v))
-                                          : mpsc.try_push(std::move(v));
+                                            : mpsc.try_push(std::move(v));
         if (ok) poke();
         return ok;
     }
@@ -85,11 +87,11 @@ struct ChannelState {
     }
 };
 
-} // namespace detail
+}  // namespace detail
 
 template <class T>
 class ChannelTx {
-public:
+  public:
     ChannelTx() = default;
     explicit ChannelTx(std::shared_ptr<detail::ChannelState<T>> st)
         : st_(std::move(st)) {}
@@ -100,13 +102,13 @@ public:
     }
     bool valid() const noexcept { return st_ != nullptr; }
 
-private:
+  private:
     std::shared_ptr<detail::ChannelState<T>> st_;
 };
 
 template <class T>
 class ChannelRx {
-public:
+  public:
     ChannelRx() = default;
     explicit ChannelRx(std::shared_ptr<detail::ChannelState<T>> st)
         : st_(std::move(st)) {}
@@ -117,7 +119,9 @@ public:
         using Fn = std::decay_t<F>;
         auto* box = new Fn(std::forward<F>(cb));
         st_->cb_obj = box;
-        st_->cb = [](void* p, std::span<const T> b) { (*static_cast<Fn*>(p))(b); };
+        st_->cb = [](void* p, std::span<const T> b) {
+            (*static_cast<Fn*>(p))(b);
+        };
         st_->target = em.mailbox();
         // stash the box on the state for teardown
         st_->teardown = [](void* p) { delete static_cast<Fn*>(p); };
@@ -126,15 +130,15 @@ public:
     // Pollable variant for non-EM contexts (and tests).
     void poll() { st_->drain(); }
 
-private:
+  private:
     std::shared_ptr<detail::ChannelState<T>> st_;
 };
 
 template <class T>
-std::pair<ChannelTx<T>, ChannelRx<T>>
-channel(std::size_t capacity_pow2, ChannelKind kind = ChannelKind::SPSC) {
+std::pair<ChannelTx<T>, ChannelRx<T>> channel(
+    std::size_t capacity_pow2, ChannelKind kind = ChannelKind::SPSC) {
     auto st = std::make_shared<detail::ChannelState<T>>(capacity_pow2, kind);
     return {ChannelTx<T>(st), ChannelRx<T>(std::move(st))};
 }
 
-} // namespace afx
+}  // namespace afx

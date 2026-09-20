@@ -15,22 +15,23 @@
 namespace afx {
 
 struct Core {
-    int              id = 0;            // logical cpu index
-    int              package = 0;       // socket
-    int              physical = 0;      // physical core id within package
-    int              numa = -1;
-    std::vector<int> smt_siblings;      // includes self
+    int id = 0;        // logical cpu index
+    int package = 0;   // socket
+    int physical = 0;  // physical core id within package
+    int numa = -1;
+    std::vector<int> smt_siblings;  // includes self
 };
 
 class Topology {
-public:
+  public:
     // sysfs_root defaults to /sys; tests inject a fixture tree.
     static Topology detect(std::string_view sysfs_root = "/sys");
 
     std::span<const Core> cores() const noexcept { return cores_; }
 
     const Core* core(int logical_id) const noexcept {
-        for (auto& c : cores_) if (c.id == logical_id) return &c;
+        for (auto& c : cores_)
+            if (c.id == logical_id) return &c;
         return nullptr;
     }
 
@@ -48,12 +49,13 @@ public:
     std::size_t size() const noexcept { return cores_.size(); }
     bool empty() const noexcept { return cores_.empty(); }
 
-private:
-    explicit Topology(std::string sysfs_root) : sysfs_root_(std::move(sysfs_root)) {}
+  private:
+    explicit Topology(std::string sysfs_root)
+        : sysfs_root_(std::move(sysfs_root)) {}
 
     std::string sysfs_root_;
     std::vector<Core> cores_;
     std::map<int, std::vector<int>> numa_to_cores_;
 };
 
-} // namespace afx
+}  // namespace afx

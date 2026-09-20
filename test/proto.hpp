@@ -11,17 +11,17 @@
 namespace afx::test {
 
 struct EchoHeader {
-    std::uint8_t  magic;
+    std::uint8_t magic;
     std::uint16_t len_be;
-    std::uint8_t  type;
+    std::uint8_t type;
 };
 struct EchoMsg {
     EchoHeader header;
-    ByteSpan   body;
+    ByteSpan body;
 };
 
 struct EchoProto {
-    using Header  = EchoHeader;
+    using Header = EchoHeader;
     using Message = EchoMsg;
     static constexpr std::size_t kHeaderSize = sizeof(EchoHeader);
     static constexpr std::uint8_t kMagic = 0xA5;
@@ -45,4 +45,4 @@ inline std::vector<std::byte> echo_frame(std::string_view body,
     return out;
 }
 
-} // namespace afx::test
+}  // namespace afx::test
