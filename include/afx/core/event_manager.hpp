@@ -574,8 +574,13 @@ class BasicEventManager {
 
         Nanos timeout = Nanos::zero();
         if (may_block) {
-            // Arm/block protocol, consumer side (§8.1).
+            // Arm/block protocol, consumer side (§8.1). The seq_cst fence
+            // forbids the ring check's loads from completing before the
+            // Blocked store is visible (StoreLoad); without it a producer
+            // can push, read stale Running, and skip the wake while we see
+            // an empty ring and sleep.
             mb_->state.store(MailboxState::Blocked, std::memory_order_seq_cst);
+            std::atomic_thread_fence(std::memory_order_seq_cst);
             if (!mb_->ring.empty()) {
                 mb_->state.store(MailboxState::Running,
                                  std::memory_order_seq_cst);
@@ -730,6 +735,9 @@ class BasicEventManager {
     }
     void post_wake() {
         ++stats_.mailbox_pushes;
+        // See Mailbox::after_push — the seq_cst fence keeps this load from
+        // completing before the ring push it guards is globally visible.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         if (mb_->state.load(std::memory_order_seq_cst) == MailboxState::Blocked)
             backend_.wake();
     }

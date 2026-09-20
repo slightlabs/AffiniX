@@ -84,6 +84,7 @@ class UringBackend {
     int init(const UringConfig& cfg) noexcept;  // 0 or -errno
     int register_pbuf_ring(const UringConfig& cfg) noexcept;
     void provide_buffer(std::uint16_t bid) noexcept;
+    bool arm_wake_poll() noexcept;  // stage the multishot wake-poll SQE
     void teardown() noexcept;
 
     // ---- ring pointers (mmap'd shared with the kernel) ----
@@ -115,6 +116,7 @@ class UringBackend {
     std::unordered_set<std::uint64_t> swallow_;  // suppress one -ECANCELED
     std::unordered_set<std::uint64_t> armed_accepts_;  // live multishot accepts
     bool multishot_accept_ = false;
+    bool wake_armed_ = false;  // multishot wake poll is live in the kernel
 
     struct SendvCtx {
         msghdr msg{};

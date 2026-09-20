@@ -113,6 +113,8 @@ UringBackend& UringBackend::operator=(UringBackend&& o) noexcept {
     swallow_ = std::move(o.swallow_);
     armed_accepts_ = std::move(o.armed_accepts_);
     multishot_accept_ = o.multishot_accept_;
+    wake_armed_ = o.wake_armed_;
+    o.wake_armed_ = false;
     sendv_ = std::move(o.sendv_);
     connect_ = std::move(o.connect_);
     pbuf_ = o.pbuf_;
@@ -226,15 +228,7 @@ int UringBackend::init(const UringConfig& cfg) noexcept {
     if (wake_fd_ < 0) goto fail;
 
     // Persistent multishot poll on the wake eventfd; completions are filtered.
-    {
-        io_uring_sqe* s = alloc_sqe();
-        if (!s) goto fail;
-        s->opcode = IORING_OP_POLL_ADD;
-        s->fd = wake_fd_;
-        s->poll32_events = POLLIN;
-        s->len = IORING_POLL_ADD_MULTI;
-        s->user_data = kWakeTag;
-    }
+    if (!arm_wake_poll()) goto fail;
 
     if (cfg.use_pbuf_ring && register_pbuf_ring(cfg) != 0) goto fail;
     return 0;
@@ -244,6 +238,18 @@ fail: {
     teardown();
     return -e;
 }
+}
+
+bool UringBackend::arm_wake_poll() noexcept {
+    io_uring_sqe* s = alloc_sqe();
+    if (!s) return false;
+    s->opcode = IORING_OP_POLL_ADD;
+    s->fd = wake_fd_;
+    s->poll32_events = POLLIN;
+    s->len = IORING_POLL_ADD_MULTI;
+    s->user_data = kWakeTag;
+    wake_armed_ = true;
+    return true;
 }
 
 int UringBackend::register_pbuf_ring(const UringConfig& cfg) noexcept {
@@ -351,6 +357,12 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
             if (cqe.user_data == kWakeTag) {
                 std::uint64_t v;
                 while (::read(wake_fd_, &v, sizeof(v)) == sizeof(v)) {}
+                // A multishot poll ends on any terminal CQE (error, or a
+                // successful one without F_MORE when the kernel drops the
+                // request under CQ pressure). Without re-arming, every
+                // later wake() writes an eventfd nothing polls — the loop
+                // sleeps with a non-empty mailbox. Re-arm below.
+                if (!(cqe.flags & IORING_CQE_F_MORE)) wake_armed_ = false;
             }
             continue;
         }
@@ -418,6 +430,10 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
         }
     }
     __atomic_store_n(cq_head_, head, __ATOMIC_RELEASE);
+    // Re-arm the wake poll if a terminal CQE ended it this drain; the staged
+    // SQE rides the next (or current, if we're in wait()'s first drain)
+    // submission.
+    if (!wake_armed_ && ring_fd_ >= 0) (void)arm_wake_poll();
     return n;
 }
 

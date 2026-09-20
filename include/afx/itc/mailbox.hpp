@@ -137,8 +137,13 @@ class Mailbox {
 
     // Arm/block protocol, producer side (§8.1): if the consumer has published
     // Blocked with seq_cst, our push happens-before its re-check of the ring,
-    // so either it sees the item or we signal — never both lost.
+    // so either it sees the item or we signal — never both lost. The seq_cst
+    // fence is required: the ring push ends in a release store, and a later
+    // load is allowed to complete before that store is globally visible
+    // (StoreLoad) — without the fence we could read a stale Running while
+    // the consumer's re-check still can't see the item it pushed.
     void after_push() const {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         if (impl_->state.load(std::memory_order_seq_cst) ==
             MailboxState::Blocked)
             if (impl_->wake_fn) impl_->wake_fn(impl_->wake_ctx);
