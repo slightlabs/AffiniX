@@ -241,6 +241,48 @@ TEST_CASE("uring backend: cancel delivers -ECANCELED") {
     CHECK(c.result == -ECANCELED);
 }
 
+TEST_CASE("uring backend: multishot accept keeps firing without re-arm") {
+    UringConfig cfg;
+    cfg.multishot_accept = true;
+    auto res = UringBackend::create(cfg);
+    if (!res) {
+        MESSAGE("io_uring unavailable — skipping");
+        return;
+    }
+    auto& b = *res;
+
+    auto lsock = sock::create(AF_INET, SocketOptions{});
+    REQUIRE(lsock);
+    int lfd = *lsock;
+    REQUIRE(sock::bind(lfd, SockAddr::loopback(0), true, false).has_value());
+    REQUIRE(sock::listen(lfd, 16).has_value());
+    sockaddr_storage ss{};
+    socklen_t slen = sizeof(ss);
+    REQUIRE(::getsockname(lfd, reinterpret_cast<sockaddr*>(&ss), &slen) == 0);
+    SockAddr bound;
+    std::memcpy(bound.addr(), &ss, slen);
+
+    UserData a = tag(OpKind::Accept);
+    REQUIRE(b.submit_accept(a, lfd).has_value());
+    // While the multishot accept is armed a second submit must be refused.
+    CHECK_FALSE(b.submit_accept(a, lfd).has_value());
+
+    // Three sequential connections → three completions, each flagged More.
+    CompStash stash;
+    for (int i = 0; i < 3; ++i) {
+        int c = ::socket(AF_INET, SOCK_STREAM, 0);
+        REQUIRE(c >= 0);
+        REQUIRE(::connect(c, bound.addr(), bound.len()) == 0);
+        ::close(c);
+        Completion comp = find_completion(b, stash, a.raw);
+        REQUIRE(comp.user.raw == a.raw);
+        CHECK(comp.result > 0);
+        CHECK((comp.flags & CompletionFlag::More) != 0);
+        if (comp.result > 0) ::close(comp.result);
+    }
+    ::close(lfd);
+}
+
 TEST_CASE("uring backend: provided-buffer ring recv") {
     UringConfig cfg;
     cfg.use_pbuf_ring = true;

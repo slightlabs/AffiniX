@@ -152,3 +152,19 @@ TEST_CASE("EM spin-until: idle loop stops reporting work") {
     env.em.poll_once();
     CHECK(env.em.stats().idle_iterations == idle0 + 1);
 }
+
+TEST_CASE("EM timers: armed before first poll measures from real now") {
+    // Regression: now_ was epoch until the first poll_once, so after()
+    // armed pre-run collapsed to immediate expiry — TcpClient's connect
+    // timeout fired instantly, killing every connect on the first iteration.
+    auto em = BasicEventManager<VirtualClock, SimBackend>(
+        EventManagerConfig{.wait = WaitStrategy::Spin},
+        VirtualClock{TimePoint(500ms)}, SimBackend{});
+    bool fired = false;
+    em.after(100ms, [&](TimerCtx) { fired = true; });
+    em.poll_once();
+    CHECK(!fired);                          // 100ms has not elapsed yet
+    em.clock().advance(150ms);
+    em.poll_once();
+    CHECK(fired);
+}

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../proto.hpp"
+#include "../real_env.hpp"
 #include "../test_env.hpp"
 #include "afx/core/event_manager.hpp"
 #include "afx/net/tcp_server.hpp"
@@ -82,9 +83,13 @@ TEST_CASE("sim: server accepts, echoes, and closes deterministically") {
     (void)closes;
 }
 
-// Real loopback: epoll EM on a thread + blocking client socket.
-TEST_CASE("loopback: TcpServer echoes frames to a real client") {
-    EventManager em(EventManagerConfig{.wait = WaitStrategy::Block});
+// Real loopback: production-backend EM on a thread + blocking client socket.
+AFX_BACKEND_TEST_CASE("loopback: TcpServer echoes frames to a real client",
+                      EM) {
+    auto emp = afx::test::make_real_em<EM>(
+        EventManagerConfig{.wait = WaitStrategy::Block});
+    if (!emp) { MESSAGE("backend unavailable — skipped"); return; }
+    EM& em = *emp;
     std::promise<std::uint16_t> port_p;
     std::atomic<bool> failed{false};
 
@@ -92,7 +97,7 @@ TEST_CASE("loopback: TcpServer echoes frames to a real client") {
         Handlers<EchoProto> h;
         h.on_messages = [&](ConnId id, std::span<const EchoMsg> batch) {
             for (auto& m : batch) {
-                auto* c = Connection<EchoProto, EventManager>::resolve(em, id);
+                auto* c = Connection<EchoProto, EM>::resolve(em, id);
                 if (!c) continue;
                 std::array<std::byte, sizeof(EchoHeader)> hdr;
                 std::memcpy(hdr.data(), &m.header, sizeof(hdr));
@@ -103,7 +108,7 @@ TEST_CASE("loopback: TcpServer echoes frames to a real client") {
         };
         ServerConfig cfg;
         cfg.bind = SockAddr::loopback(0);
-        auto srv = em.make_server<EchoProto>(cfg, std::move(h));
+        auto srv = em.template make_server<EchoProto>(cfg, std::move(h));
         if (!srv) {
             failed = true;
             em.stop();

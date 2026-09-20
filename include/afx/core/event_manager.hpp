@@ -14,6 +14,9 @@
 
 #include "afx/backend/backend.hpp"
 #include "afx/backend/epoll.hpp"
+#ifdef AFX_WITH_URING
+#include "afx/backend/uring.hpp"
+#endif
 #include "afx/core/context.hpp"
 #include "afx/core/flight_recorder.hpp"
 #include "afx/core/handle_table.hpp"
@@ -139,8 +142,10 @@ class BasicEventManager {
 
     explicit BasicEventManager(EventManagerConfig cfg)
         requires std::default_initializable<Clock> &&
-                 std::default_initializable<Backend>
-        : BasicEventManager(std::move(cfg), Clock{}, Backend{}) {}
+                 (std::default_initializable<Backend> ||
+                  std::constructible_from<Backend, BackendKind>)
+        : BasicEventManager(std::move(cfg), Clock{},
+                            make_backend<Backend>(cfg.backend)) {}
 
     BasicEventManager(EventManagerConfig cfg, Clock clock, Backend backend)
         : config_(std::move(cfg)),
@@ -150,6 +155,10 @@ class BasicEventManager {
           mb_(std::make_shared<MailboxImpl>(config_.mailbox_capacity)),
           comp_buf_(config_.max_io_events),
           owner_(std::this_thread::get_id()) {
+        // Seed cached time so timers armed before the first poll_once()
+        // (e.g. TcpClient::connect_next's timeout) measure from real now —
+        // epoch would collapse them to immediate expiry.
+        now_ = clock_.now();
         mb_->overflow = config_.mailbox_overflow;
         mb_->wake_fn = [](void* p) { static_cast<Backend*>(p)->wake(); };
         mb_->wake_ctx = &backend_;
@@ -765,10 +774,27 @@ class BasicEventManager {
     std::thread::id owner_;
     TimePoint spin_until_{};  // epoch default: blocks until first work
     bool blocked_ = false;
+
+    // Backend construction honoring config.backend when the backend type
+    // accepts a BackendKind (AutoBackend); fixed-type backends ignore it.
+    template <class B>
+    static B make_backend(BackendKind kind) {
+        if constexpr (std::constructible_from<B, BackendKind>)
+            return B{kind};
+        else {
+            (void)kind;
+            return B{};
+        }
+    }
 };
 
-// The default production configuration: real clock + epoll on Linux.
-// Tests instantiate BasicEventManager<VirtualClock, SimBackend>.
+// The default production configuration: real clock + auto backend selection
+// (io_uring where available, epoll otherwise; §9.5). Tests instantiate
+// BasicEventManager<VirtualClock, SimBackend>.
+#ifdef AFX_WITH_URING
+using EventManager = BasicEventManager<SteadyClock, AutoBackend>;
+#else
 using EventManager = BasicEventManager<SteadyClock, EpollBackend>;
+#endif
 
 }  // namespace afx

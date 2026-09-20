@@ -28,6 +28,7 @@ struct UringConfig {
     std::uint16_t pbuf_bgid = 0;         // buffer group id
     std::uint32_t pbuf_entries = 512;    // power of two
     std::uint32_t pbuf_buf_size = 4096;  // bytes per provided buffer
+    bool          multishot_accept = false; // IORING_ACCEPT_MULTISHOT (M8-04)
 };
 
 // Result of IORING_REGISTER_PROBE — which opcodes the kernel supports.
@@ -110,8 +111,10 @@ class UringBackend {
     std::uint32_t pending_ = 0;  // staged SQEs not yet visible to the kernel
 
     // ---- per-fd / per-op bookkeeping ----
-    std::unordered_map<int, UserData> watch_;    // fd → watch tag
-    std::unordered_set<std::uint64_t> swallow_;  // suppress one -ECANCELED
+    std::unordered_map<int, UserData> watch_;          // fd → watch tag
+    std::unordered_set<std::uint64_t> swallow_;        // suppress one -ECANCELED
+    std::unordered_set<std::uint64_t> armed_accepts_;  // live multishot accepts
+    bool multishot_accept_ = false;
 
     struct SendvCtx {
         msghdr msg{};
@@ -143,10 +146,14 @@ class AutoBackend {
   public:
     static constexpr bool kProactor = false;  // conservative: backend varies
 
-    AutoBackend();
+    // kind: Auto/Uring try io_uring first (silent epoll fallback per §9.5);
+    // Epoll selects epoll directly.
+    explicit AutoBackend(BackendKind kind = BackendKind::Auto);
     ~AutoBackend() = default;
     AutoBackend(const AutoBackend&) = delete;
     AutoBackend& operator=(const AutoBackend&) = delete;
+    AutoBackend(AutoBackend&&) noexcept = default;
+    AutoBackend& operator=(AutoBackend&&) noexcept = default;
 
     BackendKind kind() const noexcept { return kind_; }
 

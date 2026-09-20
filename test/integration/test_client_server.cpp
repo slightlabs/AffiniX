@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "../proto.hpp"
+#include "../real_env.hpp"
 #include "../test_env.hpp"
 #include "afx/net/tcp_client.hpp"
 #include "afx/net/tcp_server.hpp"
@@ -16,9 +17,14 @@ using afx::test::EchoHeader;
 using afx::test::EchoMsg;
 using afx::test::EchoProto;
 
-// Client + server on one real EM over loopback (§15 integration).
-TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
-    EventManager em(EventManagerConfig{.wait = WaitStrategy::SpinThenBlock});
+// Client + server on one real EM over loopback (§15 integration). Runs on
+// every production backend — epoll and io_uring — via the same test body
+// (M8-11 backend parity).
+AFX_BACKEND_TEST_CASE("loopback: TcpClient connects, echoes, reconnects", EM) {
+    auto emp = afx::test::make_real_em<EM>(
+        EventManagerConfig{.wait = WaitStrategy::SpinThenBlock});
+    if (!emp) { MESSAGE("backend unavailable — skipped"); return; }
+    EM& em = *emp;
     std::promise<void> ready;
     std::atomic<int> echoes{0};
     std::atomic<int> opens{0};
@@ -28,7 +34,7 @@ TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
         Handlers<EchoProto> sh;
         sh.on_messages = [&](ConnId id, std::span<const EchoMsg> batch) {
             for (auto& m : batch) {
-                auto* c = Connection<EchoProto, EventManager>::resolve(em, id);
+                auto* c = Connection<EchoProto, EM>::resolve(em, id);
                 if (!c) continue;
                 std::array<std::byte, sizeof(EchoHeader)> hdr;
                 std::memcpy(hdr.data(), &m.header, sizeof(hdr));
@@ -39,7 +45,7 @@ TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
         };
         ServerConfig scfg;
         scfg.bind = SockAddr::loopback(0);
-        auto srv = em.make_server<EchoProto>(scfg, std::move(sh));
+        auto srv = em.template make_server<EchoProto>(scfg, std::move(sh));
         if (!srv) {
             ready.set_value();
             em.stop();
@@ -50,7 +56,7 @@ TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
         Handlers<EchoProto> ch;
         ch.on_open = [&](ConnId id, Peer) {
             ++opens;
-            auto* c = Connection<EchoProto, EventManager>::resolve(em, id);
+            auto* c = Connection<EchoProto, EM>::resolve(em, id);
             if (!c) return;
             auto f = echo_frame("hi");
             c->send(ByteSpan(f.data(), f.size()));
@@ -65,7 +71,7 @@ TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
         ccfg.connect_timeout = 2s;
         ccfg.auto_reconnect = true;
         ccfg.reconnect = Backoff{10ms, 100ms, 0.0, Duration::zero()};
-        auto cli = em.make_client<EchoProto>(ccfg, std::move(ch));
+        auto cli = em.template make_client<EchoProto>(ccfg, std::move(ch));
         if (!cli) {
             ready.set_value();
             em.stop();
@@ -85,12 +91,20 @@ TEST_CASE("loopback: TcpClient connects, echoes, reconnects") {
 
     em.stop();
     t.join();
-    CHECK(closes >= 1);  // shutdown closes the conn -> on_close
+    // Shutdown-close is delivered when the EM tears down its owned objects
+    // (§20) — which is the EM's destructor, not stop().
+    emp.reset();
+    CHECK(closes >= 1);
 }
 
 // Connect to a dead port: ConnectFailed, no auto-reconnect → Disconnected.
-TEST_CASE("loopback: refused connect ends Disconnected without reconnect") {
-    EventManager em(EventManagerConfig{.wait = WaitStrategy::SpinThenBlock});
+AFX_BACKEND_TEST_CASE(
+    "loopback: refused connect ends Disconnected without reconnect",
+    EM) {
+    auto emp = afx::test::make_real_em<EM>(
+        EventManagerConfig{.wait = WaitStrategy::SpinThenBlock});
+    if (!emp) { MESSAGE("backend unavailable — skipped"); return; }
+    EM& em = *emp;
     std::promise<void> ready;
     std::atomic<ClientState> last{ClientState::Disconnected};
     std::atomic<int> closes{0};
@@ -103,7 +117,7 @@ TEST_CASE("loopback: refused connect ends Disconnected without reconnect") {
         ccfg.target = Endpoint{"127.0.0.1", 1};
         ccfg.auto_reconnect = false;
         ccfg.connect_timeout = 500ms;
-        auto cli = em.make_client<EchoProto>(ccfg, std::move(ch));
+        auto cli = em.template make_client<EchoProto>(ccfg, std::move(ch));
         REQUIRE(cli.has_value());
         (*cli)->on_state_change([&](ClientState s) { last = s; });
         ready.set_value();

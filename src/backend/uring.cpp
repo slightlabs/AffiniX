@@ -111,6 +111,8 @@ UringBackend& UringBackend::operator=(UringBackend&& o) noexcept {
     o.pending_ = 0;
     watch_ = std::move(o.watch_);
     swallow_ = std::move(o.swallow_);
+    armed_accepts_ = std::move(o.armed_accepts_);
+    multishot_accept_ = o.multishot_accept_;
     sendv_ = std::move(o.sendv_);
     connect_ = std::move(o.connect_);
     pbuf_ = o.pbuf_;
@@ -159,6 +161,7 @@ Result<UringCaps> UringBackend::probe() {
 }
 
 int UringBackend::init(const UringConfig& cfg) noexcept {
+    multishot_accept_ = cfg.multishot_accept;
     io_uring_params p{};
     ring_fd_ = uring_setup(cfg.sq_entries, &p);
     if (ring_fd_ < 0) return -errno;
@@ -371,6 +374,11 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
                 connect_.erase(cqe.user_data);
                 c.result = cqe.res;
                 break;
+            case std::uint8_t(OpKind::Accept):
+                if (!(cqe.flags & IORING_CQE_F_MORE))
+                    armed_accepts_.erase(cqe.user_data);  // terminal CQE
+                c.result = cqe.res;
+                break;
             case std::uint8_t(OpKind::Recv): {
                 auto it = recv_dst_.find(cqe.user_data);
                 if (it != recv_dst_.end()) {
@@ -571,6 +579,10 @@ Result<void> UringBackend::submit_sendv(UserData u, int fd,
 }
 
 Result<void> UringBackend::submit_accept(UserData u, int listen_fd) {
+    // A multishot accept stays armed across completions; a second submit for
+    // the same tag would stack duplicate ops on the listen fd.
+    if (multishot_accept_ && armed_accepts_.contains(u.raw))
+        return make_error(ErrorCategory::Internal, Err::Invalid);
     io_uring_sqe* s = alloc_sqe();
     if (!s) {
         if (auto r = flush_full_sq(); !r) return r;
@@ -580,6 +592,10 @@ Result<void> UringBackend::submit_accept(UserData u, int listen_fd) {
     s->opcode = IORING_OP_ACCEPT;
     s->fd = listen_fd;
     s->accept_flags = SOCK_NONBLOCK | SOCK_CLOEXEC;
+    if (multishot_accept_) {
+        s->ioprio |= IORING_ACCEPT_MULTISHOT;
+        armed_accepts_.insert(u.raw);
+    }
     s->user_data = u.raw;
     return {};
 }
@@ -657,22 +673,26 @@ void UringBackend::wake() {
 // AutoBackend — runtime selection (§9.5)
 // ---------------------------------------------------------------------------
 
-AutoBackend::AutoBackend() {
+AutoBackend::AutoBackend(BackendKind kind) {
     // Probe before committing: ring setup must succeed and every op the
     // backend issues must be supported, else stay on epoll.
-    bool ok = false;
-    if (auto caps = UringBackend::probe()) {
-        constexpr std::uint8_t required[] = {
-            IORING_OP_POLL_ADD,     IORING_OP_POLL_REMOVE, IORING_OP_SENDMSG,
-            IORING_OP_RECV,         IORING_OP_SEND,        IORING_OP_ACCEPT,
-            IORING_OP_ASYNC_CANCEL, IORING_OP_CONNECT,
-        };
-        ok = true;
-        for (std::uint8_t op : required)
-            if (!caps->supports(op)) {
-                ok = false;
-                break;
-            }
+    bool ok = kind != BackendKind::Epoll;
+    if (ok) {
+        auto caps = UringBackend::probe();
+        if (!caps) {
+            ok = false;
+        } else {
+            constexpr std::uint8_t required[] = {
+                IORING_OP_POLL_ADD,     IORING_OP_POLL_REMOVE, IORING_OP_SENDMSG,
+                IORING_OP_RECV,         IORING_OP_SEND,        IORING_OP_ACCEPT,
+                IORING_OP_ASYNC_CANCEL, IORING_OP_CONNECT,
+            };
+            for (std::uint8_t op : required)
+                if (!caps->supports(op)) {
+                    ok = false;
+                    break;
+                }
+        }
     }
     if (ok) {
         if (auto b = UringBackend::create()) {

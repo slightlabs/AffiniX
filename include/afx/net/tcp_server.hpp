@@ -105,6 +105,13 @@ class TcpServer {
     }
 
     void on_accept(const Completion& c) {
+        // Re-arm a single-shot accept on every terminal completion —
+        // including transient errors and capacity drops, or the accept
+        // pipeline silently dies. A multishot accept stays armed while
+        // More is set; a cancelled accept is never re-armed.
+        bool terminal = !(c.flags & CompletionFlag::More);
+        if (terminal && c.result != -ECANCELED)
+            em_->submit_accept(accept_sink_, listen_fd_);
         if (c.result < 0) {
             if (c.result != -ECANCELED) ++em_->stats().internal_errors;
             return;
@@ -132,9 +139,6 @@ class TcpServer {
         ++em_->stats().conns_opened;
         em_->recorder().record(EventKind::Accept, id.idx, std::uint32_t(cfd));
         conns_[key(id)]->start(peer);
-        // Keep accepting: re-arm the accept op (emulated proactor is
-        // single-shot per submit).
-        em_->submit_accept(accept_sink_, listen_fd_);
     }
 
     static void on_conn_gone(void* self, ConnId id, CloseReason) {
