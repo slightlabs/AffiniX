@@ -36,10 +36,12 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
 
       # -j: the suite is 140+ mostly-sub-second cases; serial ctest is the
-      # long pole. AFX_MODEL_SCALE trims per-seed model steps for the PR
-      # gate (nightly sweeps more seeds at full scale instead).
+      # long pole. --timeout bounds each case so a hang fails instead of
+      # stalling the job. AFX_MODEL_SCALE trims per-seed model steps for
+      # the PR gate (nightly sweeps more seeds at full scale instead).
       - name: Test
-        run: ctest --preset ${{ matrix.preset }} --output-on-failure -j"$(nproc)"
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure \
+               -j"$(nproc)" --timeout 300
         env:
           AFX_MODEL_SCALE: "0.3"
 
@@ -61,7 +63,8 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
       - name: Test
-        run: ctest --preset ${{ matrix.preset }} --output-on-failure -j"$(nproc)"
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure \
+               -j"$(nproc)" --timeout 600
 
   clang-thread-safety:
     name: clang-tsa (-Wthread-safety)

@@ -31,7 +31,8 @@ jobs:
         run: cmake --build --preset gcc-release -j"$(nproc)"
 
       - name: Test
-        run: ctest --preset gcc-release --output-on-failure -j"$(nproc)"
+        run: ctest --preset gcc-release --output-on-failure -j"$(nproc)" \
+               --timeout 300
 
       - name: Package headers + static library
         run: |
