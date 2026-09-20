@@ -1,0 +1,17 @@
+# Pre-existing ADR-0009 debt, tracked rather than silently exempted.
+#
+# These are real, EM-affine public members that predate this check and lack
+# AFX_REQUIRES(...). They are not annotated yet because doing so needs an
+# EmContext-typed capability member wired through BasicEventManager plus a
+# must-not-compile fixture proving the Clang -Wthread-safety job actually
+# rejects an off-thread call (test/affinity_negative/, M1-02) — neither of
+# which could be validated in this environment (no clang toolchain
+# available). Tracked as an M1 follow-up; do not add new entries here for
+# code that could instead be annotated.
+#
+# Format: one `path:function` per line (path relative to the repo root,
+# forward slashes), matching a bare function name as found by
+# check_annotations.py (overloads are not disambiguated).
+include/afx/core/event_manager.hpp:poll_once
+include/afx/core/event_manager.hpp:defer
+include/afx/core/event_manager.hpp:watch

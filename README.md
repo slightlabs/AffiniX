@@ -91,4 +91,4 @@ before any code is written:
 
 ## License
 
-Not yet chosen.
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,20 @@
+---
+# DESIGN.md/IMPLEMENTATION_PLAN.md M0-05: obvious-bug-pattern checks. Kept
+# deliberately narrow at this stage — broad style checks live in
+# .clang-format instead, and clang-analyzer-* is expensive enough to be a
+# separate opt-in job rather than blocking every PR.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  performance-*,
+  modernize-use-override,
+  modernize-use-nullptr,
+  readability-braces-around-statements,
+  readability-else-after-return,
+  cppcoreguidelines-slicing,
+  clang-analyzer-core.*,
+  clang-analyzer-cplusplus.*
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/afx/.*'
+FormatStyle: none

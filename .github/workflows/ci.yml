@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 3 * * *'        # nightly: long stress + multi-seed fuzz
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [gcc-debug, gcc-release, clang-debug, clang-release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      # Definition of done (IMPLEMENTATION_PLAN.md §3) wants a warning-free
+      # build; -Werror isn't on yet because the existing tree has a handful
+      # of pre-existing warnings (missing field initializers, unused
+      # [[nodiscard]] results) that predate this CI job. Tracked as a
+      # follow-up rather than silently dropping the requirement.
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure
+
+  sanitizers:
+    name: ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [asan, ubsan]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure
+
+  clang-thread-safety:
+    name: clang-tsa (-Wthread-safety)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang
+      - name: Configure
+        run: cmake --preset clang-tsa
+      - name: Build
+        run: cmake --build --preset clang-tsa -j"$(nproc)"
+
+  hygiene:
+    name: header hygiene + annotation coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove the scripts catch what they claim to (M0-07)
+        run: python3 tools/test_hygiene_scripts.py
+      - name: check_header_hygiene.py
+        run: python3 tools/check_header_hygiene.py
+      - name: check_annotations.py
+        run: python3 tools/check_annotations.py
+
+  # Nightly (IMPLEMENTATION_PLAN.md §CI stages): long stress runs and a
+  # multi-seed fuzz sweep — too slow for the PR gate. Runs on the cron
+  # schedule and on manual dispatch; PRs/pushes skip it.
+  nightly:
+    name: nightly stress + fuzz
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+      - name: Configure
+        run: cmake --preset gcc-debug
+      - name: Build
+        run: cmake --build --preset gcc-debug -j"$(nproc)"
+      - name: Long lost-wakeup stress (AFX_STRESS_SCALE=20)
+        run: |
+          AFX_STRESS_SCALE=20 ./build/gcc-debug/test/afx_stress_tests
+      - name: Fuzzer sweep — 16 seeds
+        run: |
+          for seed in 1 2 3 5 8 13 21 34 55 89 144 233 377 610 987 1597; do
+            echo "=== AFX_FUZZ_SEED=$seed ==="
+            AFX_FUZZ_SEED=$seed \
+              ./build/gcc-debug/test/afx_tests -tc="fuzz:*"
+          done
+      - name: Model tests — wide seed sweep
+        run: |
+          AFX_MODEL_SEEDS="$(seq 100 50 1000 | paste -sd,)" \
+            ./build/gcc-debug/test/afx_tests -tc="model:*"
+
+  format-and-tidy:
+    name: clang-format / clang-tidy
+    runs-on: ubuntu-24.04
+    # Style/lint is advisory until a one-time repo-wide reformat commit lands
+    # (CONTRIBUTING.md) — flip this to a hard failure once that's done, per
+    # IMPLEMENTATION_PLAN.md's CI-stages table (M0).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format clang-tidy ninja-build clang
+      - name: clang-format --dry-run
+        run: |
+          find include src test examples -name '*.hpp' -o -name '*.cpp' \
+            | xargs clang-format --dry-run --Werror
+      - name: Configure (for compile_commands.json)
+        run: cmake --preset clang-debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: clang-tidy
+        run: |
+          find include src -name '*.cpp' \
+            | xargs -I{} clang-tidy -p build/clang-debug {}
