@@ -9,6 +9,7 @@
 
 #include "afx/net/sock_addr.hpp"
 #include "afx/sys/clock.hpp"
+#include "afx/sys/timestamping.hpp"
 
 namespace afx {
 
@@ -185,6 +186,12 @@ Result<void> EpollBackend::submit_connect(UserData u, int fd,
     return {};
 }
 
+void EpollBackend::set_timestamping(int fd, bool on) {
+    // May run before any submit_* (Connection::start calls it first): create
+    // the FdState entry rather than requiring prior registration.
+    fds_[fd].timestamping = on;
+}
+
 Result<void> EpollBackend::cancel(UserData u) {
     bool found = false;
     for (auto& [fd, s] : fds_) {
@@ -352,13 +359,33 @@ void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
     // Emulated proactor: drain until EAGAIN or buffer full, one completion.
     std::size_t total = 0;
     std::int32_t result = 0;
+    Timestamps stamps{};
+    std::uint32_t ts_flags = 0;
     for (;;) {
         MutByteSpan rem = s.recv_buf.subspan(total);
         if (rem.empty()) {
             result = std::int32_t(total);
             break;
         }
-        ssize_t r = ::recv(fd, rem.data(), rem.size(), MSG_NOSIGNAL);
+        ssize_t r;
+#ifdef AFX_WITH_TIMESTAMPING
+        if (s.timestamping) {
+            // SO_TIMESTAMPING delivers RX stamps as a cmsg on the data path;
+            // keep the newest read's stamps (they describe the latest byte).
+            alignas(cmsghdr) char cbuf[kTimestampingCbufSize];
+            iovec iov{rem.data(), rem.size()};
+            msghdr msg{};
+            msg.msg_iov = &iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = cbuf;
+            msg.msg_controllen = sizeof(cbuf);
+            r = ::recvmsg(fd, &msg, MSG_NOSIGNAL);
+            if (r > 0) ts_flags |= parse_rx_timestamping(msg, stamps);
+        } else
+#endif
+        {
+            r = ::recv(fd, rem.data(), rem.size(), MSG_NOSIGNAL);
+        }
         if (r > 0) {
             total += std::size_t(r);
             continue;
@@ -384,7 +411,10 @@ void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
         Completion c{};
         c.user = s.recv_ud;
         c.result = result;
+        c.flags = ts_flags;
         c.stamps.tsc = rdtsc();
+        c.stamps.hw_ns = stamps.hw_ns;
+        c.stamps.sw_ns = stamps.sw_ns;
         out[n++] = c;
     } else {
         pending_events_.emplace_back(fd, EPOLLIN);

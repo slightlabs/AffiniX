@@ -30,6 +30,9 @@ struct ThreadConfig {
     SchedPolicy sched{};
     NumaPolicy numa = NumaPolicy::LocalAlloc;
     EventManagerConfig em{};
+    // M5-06: when set, startup warns if this NIC's NUMA node differs from the
+    // shard's (§19 — locality violations are loud, never silent).
+    std::string nic_ifname;
 };
 
 class Runtime {

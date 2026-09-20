@@ -101,6 +101,21 @@ class Histogram {
         min_ = ~std::uint64_t(0);
     }
 
+    // Fold another histogram in — used when merging per-EM shards.
+    void merge(const Histogram& o) noexcept {
+        for (unsigned b = 0; b < buckets_.size(); ++b)
+            buckets_[b] += o.buckets_[b];
+        count_ += o.count_;
+        total_ += o.total_;
+        if (o.max_ > max_) max_ = o.max_;
+        if (o.min_ < min_) min_ = o.min_;
+    }
+
+    // Raw buckets for HDR-style export (tools/afx-load emits them as JSON).
+    const std::array<std::uint64_t, 64>& buckets() const noexcept {
+        return buckets_;
+    }
+
   private:
     std::array<std::uint64_t, 64> buckets_{};
     std::uint64_t count_ = 0;
@@ -116,6 +131,15 @@ struct LatencyMetrics {
     Histogram recv_to_handler_ns;
     Histogram write_queue_depth;
     Histogram deadline_headroom_ns;
+
+    // Wire-level breakdown (§21, M8-07), fed by Completion::stamps:
+    //   nic→kernel:      hw stamp → sw stamp (only when the NIC's PHC is
+    //                    synced to CLOCK_REALTIME; meaningless otherwise)
+    //   kernel→dequeue:  sw stamp → completion dequeue by the backend
+    //   dequeue→handler: backend dequeue → sink dispatch (TSC-derived)
+    Histogram nic_to_kernel_ns;
+    Histogram kernel_to_dequeue_ns;
+    Histogram dequeue_to_handler_ns;
 };
 
 }  // namespace afx

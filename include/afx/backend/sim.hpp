@@ -31,6 +31,11 @@ class SimBackend {
     Result<void> submit_connect(UserData u, int fd, const SockAddr& addr);
     Result<void> cancel(UserData u);
 
+    // Virtual time, virtual wires: no stamps to deliver (§9.4).
+    void set_timestamping(int, bool) {}
+    // No kernel ring: MSG_RING wakes are io_uring-only (M8-05).
+    int wake_ring_fd() const noexcept { return -1; }
+
     int wait(std::span<Completion> out, Nanos timeout);
     void wake() { ++wake_count_; }
 

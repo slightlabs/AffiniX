@@ -8,6 +8,7 @@
 // external dependency is pulled into the build (§23 dependency policy).
 
 #include <sys/socket.h>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -22,6 +23,8 @@ struct io_uring_buf_ring;
 
 namespace afx {
 
+struct MailboxImpl;  // itc/mailbox.hpp — weak handle for wake fallback
+
 struct UringConfig {
     std::uint32_t sq_entries = 256;      // io_uring_setup entries
     bool use_pbuf_ring = false;          // IORING_REGISTER_PBUF_RING recv path
@@ -29,6 +32,9 @@ struct UringConfig {
     std::uint32_t pbuf_entries = 512;    // power of two
     std::uint32_t pbuf_buf_size = 4096;  // bytes per provided buffer
     bool multishot_accept = false;       // IORING_ACCEPT_MULTISHOT (M8-04)
+    bool msg_ring_wakes = true;          // MSG_RING cross-EM wake (M8-05)
+    bool sqpoll = false;                 // IORING_SETUP_SQPOLL (M8-08)
+    std::uint32_t sqpoll_idle_ms = 10;   // kernel thread idle timeout
 };
 
 // Result of IORING_REGISTER_PROBE — which opcodes the kernel supports.
@@ -71,10 +77,35 @@ class UringBackend {
     Result<void> submit_connect(UserData u, int fd, const SockAddr& addr);
     Result<void> cancel(UserData u);
 
+    // Mark an fd as SO_TIMESTAMPING-enabled: recvs switch to
+    // IORING_OP_RECVMSG so RX stamps arrive as ancillary data (§9.4, M8-06).
+    void set_timestamping(int fd, bool on);
+
     int wait(std::span<Completion> out, Nanos timeout);
     void wake();  // thread-safe: eventfd write
 
     int wake_fd() const noexcept { return wake_fd_; }
+
+    // M8-05 MSG_RING cross-EM wake. wake_ring_fd() is the fd other rings
+    // target (-1 when MSG_RING is off or unsupported). msg_ring_wake() runs
+    // only on this backend's owning thread: it stages a MSG_DATA send whose
+    // completion CQE fires `target`'s eventfd wake_fn if the send itself
+    // fails — a wake is never dropped.
+    int wake_ring_fd() const noexcept {
+        return msgring_ok_ ? ring_fd_ : -1;
+    }
+    bool msg_ring_wake(int target_fd,
+                       const std::weak_ptr<MailboxImpl>& target);
+    static bool msg_ring_supported();  // cached opcode probe (kernel ≥5.18)
+    std::uint64_t msgring_sends() const noexcept { return msgring_sends_; }
+    std::uint64_t msgring_fallbacks() const noexcept {
+        return msgring_fallbacks_;
+    }
+    bool sqpoll() const noexcept { return sqpoll_; }
+    // CQEs the kernel dropped because the CQ was full (M8 sizing rule).
+    std::uint64_t cq_overflows() const noexcept {
+        return cq_overflow_ ? *cq_overflow_ : 0;
+    }
 
   private:
     io_uring_sqe* alloc_sqe();    // stage one SQE, or nullptr when full
@@ -95,12 +126,14 @@ class UringBackend {
     std::uint32_t* sq_tail_ = nullptr;
     std::uint32_t* sq_mask_ = nullptr;
     std::uint32_t* sq_entries_ = nullptr;
+    std::uint32_t* sq_flags_ = nullptr;  // IORING_SQ_NEED_WAKEUP etc.
     std::uint32_t* sq_array_ = nullptr;
     io_uring_sqe* sqes_ = nullptr;
 
     std::uint32_t* cq_head_ = nullptr;
     std::uint32_t* cq_tail_ = nullptr;
     std::uint32_t* cq_mask_ = nullptr;
+    std::uint32_t* cq_overflow_ = nullptr;  // kernel-side drop counter
     io_uring_cqe* cqes_ = nullptr;
 
     void* sq_map_ = nullptr;
@@ -140,6 +173,31 @@ class UringBackend {
     std::uint16_t pbuf_bgid_ = 0;
     std::unordered_map<std::uint64_t, MutByteSpan>
         recv_dst_;  // tag → caller buf
+
+    // SO_TIMESTAMPING recvmsg state (M8-06). The msghdr must outlive the
+    // in-flight op, so one persistent ctx per timestamping fd (a fd arms at
+    // most one recv at a time). unordered_map is node-based: ctx pointers
+    // stay valid across inserts.
+    struct RecvmsgCtx {
+        msghdr msg{};
+        iovec iov{};
+        alignas(cmsghdr) char cbuf[64]{};  // kTimestampingCbufSize
+    };
+    std::unordered_map<int, RecvmsgCtx> ts_ctx_;           // fd → ctx
+    std::unordered_map<std::uint64_t, RecvmsgCtx*> ts_pending_;  // tag → ctx
+
+    // MSG_RING send bookkeeping (M8-05): bounded table of in-flight wakes,
+    // each holding the target's eventfd fallback for a failed send CQE.
+    struct MsgringSlot {
+        std::weak_ptr<MailboxImpl> target;
+    };
+    static constexpr std::size_t kMsgringSlots = 64;
+    MsgringSlot msgring_fb_[kMsgringSlots]{};
+    std::uint32_t msgring_head_ = 0;
+    bool msgring_ok_ = false;
+    bool sqpoll_ = false;
+    std::uint64_t msgring_sends_ = 0;
+    std::uint64_t msgring_fallbacks_ = 0;
 };
 
 // AutoBackend — runtime backend selection (§9.5). Probes io_uring at
@@ -150,8 +208,10 @@ class AutoBackend {
     static constexpr bool kProactor = false;  // conservative: backend varies
 
     // kind: Auto/Uring try io_uring first (silent epoll fallback per §9.5);
-    // Epoll selects epoll directly.
-    explicit AutoBackend(BackendKind kind = BackendKind::Auto);
+    // Epoll selects epoll directly. sqpoll enables IORING_SETUP_SQPOLL on
+    // the uring ring (M8-08); setup falls back to a normal ring when denied.
+    explicit AutoBackend(BackendKind kind = BackendKind::Auto,
+                         bool sqpoll = false);
     ~AutoBackend() = default;
     AutoBackend(const AutoBackend&) = delete;
     AutoBackend& operator=(const AutoBackend&) = delete;
@@ -171,6 +231,15 @@ class AutoBackend {
     Result<void> submit_accept(UserData u, int listen_fd);
     Result<void> submit_connect(UserData u, int fd, const SockAddr& addr);
     Result<void> cancel(UserData u);
+
+    // Forwards to the selected backend; a no-op if it fell back to epoll
+    // (timestamping still works — epoll parses cmsgs on its own flag).
+    void set_timestamping(int fd, bool on);
+
+    // M8-05: forwards wake_ring_fd; msg_ring_wake returns false when the
+    // resolved backend is epoll (caller falls back to eventfd).
+    int wake_ring_fd() const noexcept;
+    bool msg_ring_wake(int fd, const std::weak_ptr<MailboxImpl>& target);
 
     int wait(std::span<Completion> out, Nanos timeout);
     void wake();

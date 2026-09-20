@@ -2,6 +2,9 @@
 
 #include <cerrno>
 #include <cstring>
+#ifdef AFX_DEBUG_CHAOS
+#include <random>
+#endif
 
 #include "afx/net/sock_addr.hpp"
 #include "afx/sys/clock.hpp"
@@ -164,6 +167,14 @@ void SimBackend::pump_recv(int, FdState& s) {
         return;
     }
     std::size_t n = std::min(s.inbound.size(), s.recv_buf.size());
+#ifdef AFX_DEBUG_CHAOS
+    // M6-13: TCP segmentation is unspecified — deliver a random nonempty
+    // prefix so framers see every possible split across runs.
+    if (n > 1) {
+        static thread_local std::mt19937_64 rng{std::random_device{}()};
+        n = 1 + std::size_t(rng() % n);
+    }
+#endif
     for (std::size_t i = 0; i < n; ++i)
         s.recv_buf[i] = s.inbound.front(), s.inbound.pop_front();
     s.recv_armed = false;

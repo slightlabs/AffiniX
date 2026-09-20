@@ -48,4 +48,11 @@ bool tsc_invariant() noexcept;
 // Calibrated TSC frequency in Hz, 0 if unknown/unavailable.
 std::uint64_t tsc_hz() noexcept;
 
+// CLOCK_REALTIME in ns — same epoch domain as SO_TIMESTAMPING software
+// stamps (§9.4). vDSO read, ~20ns.
+std::uint64_t realtime_ns() noexcept;
+// TSC tick delta → ns using the cached calibration (tsc_hz is measured once;
+// a 0 result means "TSC not invariant — no measurement").
+std::uint64_t tsc_delta_to_ns(std::uint64_t ticks) noexcept;
+
 }  // namespace afx

@@ -52,4 +52,18 @@ std::uint64_t tsc_hz() noexcept {
 #endif
 }
 
+std::uint64_t realtime_ns() noexcept {
+    timespec ts{};
+    ::clock_gettime(CLOCK_REALTIME, &ts);
+    return std::uint64_t(ts.tv_sec) * 1'000'000'000ull +
+           std::uint64_t(ts.tv_nsec);
+}
+
+std::uint64_t tsc_delta_to_ns(std::uint64_t ticks) noexcept {
+    static const std::uint64_t hz = tsc_hz();  // calibrated once per process
+    if (!hz) return 0;
+    return static_cast<std::uint64_t>(
+        (static_cast<unsigned __int128>(ticks) * 1'000'000'000ull) / hz);
+}
+
 }  // namespace afx

@@ -16,6 +16,7 @@
 #define AFX_GUARDED_BY(x) __attribute__((guarded_by(x)))
 #define AFX_ACQUIRE(...) __attribute__((acquire_capability(__VA_ARGS__)))
 #define AFX_RELEASE(...) __attribute__((release_capability(__VA_ARGS__)))
+#define AFX_SCOPED_CAPABILITY __attribute__((scoped_lockable))
 #define AFX_NO_TSA __attribute__((no_thread_safety_analysis))
 #else
 #define AFX_CAPABILITY(x)
@@ -24,6 +25,7 @@
 #define AFX_GUARDED_BY(x)
 #define AFX_ACQUIRE(...)
 #define AFX_RELEASE(...)
+#define AFX_SCOPED_CAPABILITY
 #define AFX_NO_TSA
 #endif
 

@@ -44,6 +44,9 @@ struct Handlers {
     InlineFn<void(ConnId, CloseReason), 48> on_close;
     InlineFn<void(ConnId, Error), 48> on_error;
     InlineFn<void(ConnId), 48> on_writable;
+    // §20 stage 2: invoked once per connection when shutdown begins, before
+    // the drain wait — the app's chance to flush a final response.
+    InlineFn<void(ConnId), 48> on_shutdown;
     P proto{};  // protocol instance (stateful framers allowed)
 };
 
@@ -61,6 +64,7 @@ class Connection {
         Duration idle_read_timeout{};
         Duration idle_write_timeout{};
         std::size_t read_buffer_size = 64u << 10;
+        bool timestamping = false;  // SO_TIMESTAMPING RX stamps (§9.4)
     };
 
     // notify(owner, ConnId, CloseReason) is invoked via em.defer() once the
@@ -118,6 +122,7 @@ class Connection {
     void start(Peer peer) {
         peer_ = peer;
         state_ = ConnState::Established;
+        if (params_.timestamping) em_->backend_set_timestamping(fd_, true);
         if (handlers_->on_open) handlers_->on_open(id_, peer_);
         arm_idle_timer();
         arm_recv();

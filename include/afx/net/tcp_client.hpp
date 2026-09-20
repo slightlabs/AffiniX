@@ -9,6 +9,7 @@
 #include <netdb.h>
 #include <random>
 
+#include "afx/core/pool.hpp"
 #include "afx/net/connection.hpp"
 #include "afx/net/socket.hpp"
 
@@ -53,10 +54,19 @@ class TcpClient {
     using StateFn = InlineFn<void(ClientState), 48>;
 
     TcpClient(EM& em, ClientConfig cfg, Handlers<P> handlers)
-        : em_(&em), cfg_(std::move(cfg)), handlers_(std::move(handlers)) {}
+        : em_(&em),
+          cfg_(std::move(cfg)),
+          handlers_(std::move(handlers)),
+          // A client holds one connection at a time; a small pool covers
+          // reconnect churn without per-connect heap traffic (M6-02).
+          pool_(&em.arena(), 4) {}
 
     ~TcpClient() {
-        if (conn_) conn_->close(CloseReason::Shutdown);
+        if (conn_) {
+            conn_->close(CloseReason::Shutdown);
+            pool_.destroy(conn_);
+            conn_ = nullptr;
+        }
         if (group_.valid()) em_->cancel_group(group_);
     }
 
@@ -81,7 +91,22 @@ class TcpClient {
 
     void on_state_change(StateFn&& f) { state_fn_ = std::move(f); }
     ClientState state() const noexcept { return state_; }
-    Connection<P, EM>* conn() { return conn_.get(); }
+    Connection<P, EM>* conn() { return conn_; }
+
+    // ---- §20 drain-sequence hooks ----------------------------------------
+    static void hooks_notify(void* p) {
+        auto* me = static_cast<TcpClient*>(p);
+        if (me->conn_ && me->handlers_.on_shutdown)
+            me->handlers_.on_shutdown(me->conn_->id());
+    }
+    static bool hooks_drained(void* p) {
+        auto* me = static_cast<TcpClient*>(p);
+        return !me->conn_ || me->conn_->queued_write_bytes() == 0;
+    }
+    static void hooks_shutdown_write(void* p) {
+        auto* me = static_cast<TcpClient*>(p);
+        if (me->conn_) me->conn_->shutdown_write();
+    }
 
   private:
     void set_state(ClientState s) {
@@ -131,10 +156,19 @@ class TcpClient {
         if (cfg_.bind_local)
             (void)sock::bind(raw, *cfg_.bind_local, false, false);
 
-        if (conn_) conn_.reset();
-        conn_ = std::make_unique<Conn>(*em_, raw, handlers_,
-                                       typename Conn::Params{cfg_.flow}, this,
-                                       &TcpClient::on_conn_gone);
+        if (conn_) {
+            pool_.destroy(conn_);
+            conn_ = nullptr;
+        }
+        conn_ = pool_.construct(*em_, raw, handlers_,
+                                typename Conn::Params{cfg_.flow, {}, {}, {},
+                                                      cfg_.sock.timestamping},
+                                this, &TcpClient::on_conn_gone);
+        if (!conn_) {
+            ::close(raw);
+            schedule_reconnect();
+            return;
+        }
         set_state(ClientState::Connecting);
         em_->submit_connect(conn_->sink(), raw, target);
 
@@ -154,6 +188,11 @@ class TcpClient {
                         c->close(CloseReason::ConnectFailed);
             },
             group_);
+    }
+
+    void destroy_conn() noexcept {
+        pool_.destroy(conn_);
+        conn_ = nullptr;
     }
 
     void on_connected() {
@@ -184,7 +223,7 @@ class TcpClient {
         auto* me = static_cast<TcpClient*>(self);
         // The notification is deferred — only drop the conn if it is still
         // the one that died (a reconnect may already have replaced it).
-        if (me->conn_ && me->conn_->id() == id) me->conn_.reset();
+        if (me->conn_ && me->conn_->id() == id) me->destroy_conn();
         if (r == CloseReason::ConnectFailed) {
             me->connect_next();  // try the next resolved address
         } else if (me->state_ != ClientState::Disconnected) {
@@ -196,7 +235,8 @@ class TcpClient {
     ClientConfig cfg_;
     Handlers<P> handlers_;
     StateFn state_fn_;
-    std::unique_ptr<Conn> conn_;
+    Pool<Conn> pool_;
+    Conn* conn_ = nullptr;
     std::vector<SockAddr> addrs_;
     std::size_t addr_idx_ = 0;
     ClientState state_ = ClientState::Disconnected;
@@ -215,7 +255,10 @@ BasicEventManager<C, B>::make_client(ClientConfig cfg, H&& handlers) {
         delete s;
         return r.error();
     }
-    own(s, [](void* p) { delete static_cast<Cli*>(p); });
+    typename BasicEventManager::ShutdownHooks hooks{
+        nullptr, &Cli::hooks_notify, &Cli::hooks_drained,
+        &Cli::hooks_shutdown_write};
+    own(s, [](void* p) { delete static_cast<Cli*>(p); }, hooks);
     return s;
 }
 

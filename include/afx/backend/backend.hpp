@@ -96,6 +96,10 @@ concept IoBackend =
         { b.submit_accept(u, fd) } -> std::same_as<Result<void>>;
         { b.submit_connect(u, fd, addr) } -> std::same_as<Result<void>>;
         { b.cancel(u) } -> std::same_as<Result<void>>;
+        { b.set_timestamping(fd, true) } -> std::same_as<void>;
+        // io_uring ring fd for MSG_RING cross-EM wakes (M8-05), -1 when the
+        // backend has no ring.
+        { b.wake_ring_fd() } -> std::same_as<int>;
 
         { b.wait(out, timeout) } -> std::same_as<int>;
         { b.wake() } -> std::same_as<void>;

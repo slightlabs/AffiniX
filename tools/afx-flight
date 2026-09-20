@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""afx-flight — decode an AffiniX flight-recorder crash dump (M7-09).
+
+Reads raw 32-byte FlightRecord entries (see include/afx/core/flight_recorder.hpp)
+and prints a per-EM timeline ordered by TSC. A dump may concatenate rings from
+several EMs, so records are grouped by trace/handle prefix heuristics and the
+output interleaves them by timestamp.
+
+Usage: afx-flight <dump.bin> [--tsc-hz N] [--json]
+
+Record layout (little-endian):
+    u64 tsc | u8 kind | u8 pad[3] | u32 handle | u32 a | u32 b | u64 trace
+"""
+
+import argparse
+import json
+import struct
+import sys
+
+REC = struct.Struct("<QB3xIIIQ")
+REC_SIZE = 32
+
+KINDS = [
+    "Accept", "Recv", "Frame", "Send", "TimerFire", "StateChange",
+    "ItcPost", "ItcRun", "Wakeup", "Backpressure", "Drop",
+    "DeadlineExpired", "CallbackError", "User",
+]
+
+
+def decode(buf):
+    n = len(buf) // REC_SIZE
+    out = []
+    for i in range(n):
+        tsc, kind, handle, a, b, trace = REC.unpack_from(buf, i * REC_SIZE)
+        out.append({
+            "seq": i,
+            "tsc": tsc,
+            "kind": KINDS[kind] if kind < len(KINDS) else f"kind_{kind}",
+            "handle": handle,
+            "a": a,
+            "b": b,
+            "trace": trace,
+        })
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description="decode an afx flight dump")
+    ap.add_argument("dump", help="crash dump file (raw FlightRecord stream)")
+    ap.add_argument("--tsc-hz", type=float, default=0,
+                    help="TSC frequency; when given, prints seconds offsets")
+    ap.add_argument("--json", action="store_true", help="emit JSON")
+    args = ap.parse_args()
+
+    with open(args.dump, "rb") as f:
+        recs = decode(f.read())
+    if not recs:
+        print("afx-flight: empty or truncated dump", file=sys.stderr)
+        return 1
+
+    # Order by TSC; a wrapped recorder keeps monotonic order within a ring,
+    # and across rings global sort is the best we can do without calibration.
+    recs.sort(key=lambda r: r["tsc"])
+    t0 = recs[0]["tsc"]
+
+    if args.json:
+        print(json.dumps({"records": recs, "tsc0": t0}))
+        return 0
+
+    for r in recs:
+        if args.tsc_hz:
+            ts = f"{(r['tsc'] - t0) / args.tsc_hz:12.6f}s"
+        else:
+            ts = f"+{r['tsc'] - t0:>16d} tsc"
+        print(f"{ts}  {r['kind']:<16} h={r['handle']:<8} "
+              f"a={r['a']:<10} b={r['b']:<10} trace={r['trace']:x}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

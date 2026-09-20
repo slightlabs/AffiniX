@@ -77,6 +77,39 @@ TEST_CASE("TimerWheel multi-level cascade and long horizon") {
     CHECK(fired == std::vector<int>{1});
 }
 
+TEST_CASE("TimerWheel primes its epoch on the first advance") {
+    // A real-clock EM's first expire_timers() targets a tick ~8e7 past the
+    // wheel's epoch-0 origin. Before priming, a queued node sat in a
+    // high-level bucket while advance() ground 4096 dead ticks per call —
+    // timers armed near startup effectively never fired (afx-load's pacing
+    // timers exposed it). One advance() must anchor and fire.
+    TimerWheel w(1ms);
+    TimerNode n;
+    const std::uint64_t big = 80'000'000;  // ~22 h of 1ms ticks
+    n.expiry = TimePoint(Nanos(big * 1'000'000));
+    n.expiry_tick = w.tick_of(n.expiry);  // == big
+    w.insert(n, w.now_tick());
+
+    int fired = 0;
+    w.advance(big, [&](TimerNode& m) {
+        if (&m == &n) ++fired;
+    });
+    CHECK(fired == 1);
+    CHECK(w.now_tick() == big);
+
+    // A node overdue at prime time still fires on the same first call.
+    TimerWheel w2(1ms);
+    TimerNode late;
+    late.expiry = TimePoint(Nanos(big * 1'000'000 / 2));
+    late.expiry_tick = w2.tick_of(late.expiry);
+    w2.insert(late, w2.now_tick());
+    int fired2 = 0;
+    w2.advance(big, [&](TimerNode& m) {
+        if (&m == &late) ++fired2;
+    });
+    CHECK(fired2 == 1);
+}
+
 TEST_CASE("TimerWheel overdue insert fires on the next advance step") {
     // A node armed with expiry_tick <= now_tick has no meaningful residue in
     // the current rotation; it must not sit in a stale slot for up to 256

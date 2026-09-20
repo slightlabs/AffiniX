@@ -6,6 +6,9 @@
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
+#ifdef AFX_WITH_TIMESTAMPING
+#include <linux/net_tstamp.h>  // SOF_TIMESTAMPING_*
+#endif
 
 namespace afx::sock {
 

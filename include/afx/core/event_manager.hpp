@@ -4,6 +4,7 @@
 // (DESIGN.md §7). Template parameters are the two pluggable seams:
 // the Clock policy (ADR-0001) and the IoBackend (ADR-0002).
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <optional>
@@ -11,12 +12,16 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#ifdef AFX_DEBUG_CHAOS
+#include <random>
+#endif
 
 #include "afx/backend/backend.hpp"
 #include "afx/backend/epoll.hpp"
 #ifdef AFX_WITH_URING
 #include "afx/backend/uring.hpp"
 #endif
+#include "afx/core/arena.hpp"
 #include "afx/core/context.hpp"
 #include "afx/core/flight_recorder.hpp"
 #include "afx/core/handle_table.hpp"
@@ -25,6 +30,7 @@
 #include "afx/itc/mailbox.hpp"
 #include "afx/sys/annotations.hpp"
 #include "afx/sys/clock.hpp"
+#include "afx/sys/crash_dump.hpp"
 #include "afx/sys/inline_fn.hpp"
 
 namespace afx {
@@ -74,6 +80,10 @@ struct EventManagerConfig {
     std::size_t mailbox_capacity = 4096;  // power of two
     OverflowPolicy mailbox_overflow = OverflowPolicy::Fail;
     Nanos stall_threshold = Nanos::zero();  // 0 = detector off
+    // M8-08: SQPOLL on the io_uring backend when wait==Spin — submissions go
+    // through the kernel's poll thread with zero syscalls. Degrades silently
+    // to a normal ring when SQPOLL is denied.
+    bool uring_sqpoll = true;
 };
 
 struct IterationInfo {
@@ -144,14 +154,21 @@ class BasicEventManager {
         requires std::default_initializable<Clock> &&
                  (std::default_initializable<Backend> ||
                   std::constructible_from<Backend, BackendKind>)
-        : BasicEventManager(std::move(cfg), Clock{},
-                            make_backend<Backend>(cfg.backend)) {}
+        : BasicEventManager(
+              std::move(cfg), Clock{},
+              make_backend<Backend>(cfg.backend, cfg.uring_sqpoll &&
+                                                     cfg.wait ==
+                                                         WaitStrategy::Spin)) {
+    }
 
     BasicEventManager(EventManagerConfig cfg, Clock clock, Backend backend)
         : config_(std::move(cfg)),
           clock_(std::move(clock)),
           backend_(std::move(backend)),
           wheel_(config_.timer_tick),
+          timers_(first_gen_seed()),
+          groups_(first_gen_seed()),
+          sinks_(first_gen_seed()),
           mb_(std::make_shared<MailboxImpl>(config_.mailbox_capacity)),
           comp_buf_(config_.max_io_events),
           owner_(std::this_thread::get_id()) {
@@ -162,13 +179,31 @@ class BasicEventManager {
         mb_->overflow = config_.mailbox_overflow;
         mb_->wake_fn = [](void* p) { static_cast<Backend*>(p)->wake(); };
         mb_->wake_ctx = &backend_;
+        // M8-05: publish our ring fd so peers on uring EMs can MSG_RING us.
+        mb_->msgring_fd = backend_.wake_ring_fd();
+
+        // M5-05: the arena carries the MemoryConfig NUMA policy. When the EM
+        // is constructed inside its shard thread (Runtime's thread_main pins
+        // first), LocalAlloc binds to the shard's own node.
+        numa::AllocOpts mo;
+        mo.hugepages = config_.memory.hugepages;
+        mo.prefault = config_.memory.prefault;
+        mo.interleave = config_.memory.numa == NumaPolicy::Interleave;
+        mo.node = config_.memory.numa == NumaPolicy::LocalAlloc
+                      ? numa::current_node()
+                      : -1;
+        arena_ = Arena(config_.memory.arena_bytes, mo);
+
+        // M7-08: expose this EM's flight recorder to the crash-dump handler.
+        register_recorder(&recorder_);
     }
 
     ~BasicEventManager() {
+        unregister_recorder(&recorder_);
         mb_->dead.store(true, std::memory_order_release);
         // Defined close order (§20): owned objects (servers/clients) tear
         // down their connections, then sinks, then timers.
-        for (auto& [p, del] : owned_) del(p);
+        for (auto& o : owned_) o.del(o.p);
         sinks_.for_each([](SinkEntry& s, SinkHandle) {
             if (s.teardown) s.teardown(s.obj);
         });
@@ -187,7 +222,24 @@ class BasicEventManager {
         // ownership of the loop for AFX_ASSERT_CURRENT.
         owner_ = std::this_thread::get_id();
         running_.store(true, std::memory_order_release);
+        // M8-05: posts made on this thread may wake peers via MSG_RING on
+        // our own ring when the backend supports it.
+        if constexpr (requires(Backend& b, int fd,
+                               const std::weak_ptr<MailboxImpl>& t) {
+                          { b.msg_ring_wake(fd, t) } -> std::same_as<bool>;
+                      }) {
+            detail::wake_bridge.backend = &backend_;
+            detail::wake_bridge.send_msg_ring =
+                +[](void* b, int fd, const std::weak_ptr<MailboxImpl>& t) {
+                    return static_cast<Backend*>(b)->msg_ring_wake(fd, t);
+                };
+        }
         while (!stop_.load(std::memory_order_acquire)) poll_once();
+        if constexpr (requires(Backend& b, int fd,
+                               const std::weak_ptr<MailboxImpl>& t) {
+                          { b.msg_ring_wake(fd, t) } -> std::same_as<bool>;
+                      })
+            detail::wake_bridge.backend = nullptr;
         running_.store(false, std::memory_order_release);
     }
 
@@ -228,6 +280,10 @@ class BasicEventManager {
     TimePoint now() const noexcept { return now_; }  // cached per iteration
     Clock& clock() noexcept { return clock_; }
     Backend& backend() noexcept { return backend_; }
+    // Per-EM NUMA-local bump arena (§12.2). Pools carve chunks from it;
+    // when exhausted (or arena_bytes == 0) alloc() returns nullptr and
+    // callers fall back to the heap with visible accounting.
+    Arena& arena() noexcept { return arena_; }
 
     // ---- work ---------------------------------------------------------------
     void defer(Task&& t) {  // same thread, end of iteration
@@ -413,6 +469,10 @@ class BasicEventManager {
     Result<void> backend_attach(int fd, Interest i, SinkHandle h, OpKind k) {
         return backend_.attach(fd, i, tag_of(h, k));
     }
+    // §9.4: opt a fd into SO_TIMESTAMPING stamp delivery on recv completions.
+    void backend_set_timestamping(int fd, bool on) {
+        backend_.set_timestamping(fd, on);
+    }
 
     // ---- hooks
     // ----------------------------------------------------------------
@@ -420,8 +480,39 @@ class BasicEventManager {
     void on_iteration(IterationFn&& f) { iter_fn_ = std::move(f); }
 
     // Ownership: servers/clients made by make_server/make_client are owned by
-    // the EM and destroyed with it (§7.2).
-    void own(void* p, void (*del)(void*)) { owned_.emplace_back(p, del); }
+    // the EM and destroyed with it (§7.2). ShutdownHooks let them take part
+    // in the §20 drain sequence (begin_shutdown below).
+    struct ShutdownHooks {
+        void (*begin)(void*) = nullptr;  // stop accepting new work
+        void (*notify)(void*) = nullptr;  // tell the app shutdown is coming
+        bool (*drained)(void*) = nullptr;  // in-flight writes finished?
+        void (*shutdown_write)(void*) = nullptr;  // TCP half-close
+    };
+    struct Owned {
+        void* p;
+        void (*del)(void*);
+        ShutdownHooks hooks{};
+    };
+    void own(void* p, void (*del)(void*), ShutdownHooks h = {}) {
+        owned_.push_back(Owned{p, del, h});
+    }
+
+    // §20 drain sequence: (1) listeners close, (2) apps are notified,
+    // (3) in-flight writes drain until `deadline`, (4) connections
+    // half-close, (5) the loop stops and destructors hard-close the rest.
+    // Driven by Runtime::shutdown; safe to call directly on the EM thread.
+    void begin_shutdown(TimePoint deadline) {
+        AFX_ASSERT_CURRENT(*this);
+        if (shutting_down_) return;
+        shutting_down_ = true;
+        for (auto& o : owned_)
+            if (o.hooks.begin) o.hooks.begin(o.p);
+        for (auto& o : owned_)
+            if (o.hooks.notify) o.hooks.notify(o.p);
+        shutdown_deadline_ = deadline;
+        drain_step();
+    }
+    bool shutting_down() const noexcept { return shutting_down_; }
 
     // ---- introspection
     // ----------------------------------------------------------
@@ -440,6 +531,24 @@ class BasicEventManager {
                                                          Handlers&&);
 
   private:
+    // Drain step (§20 stage 3): poll owned objects until their write queues
+    // empty or the deadline expires, then half-close and stop.
+    void drain_step() {
+        bool all = true;
+        for (auto& o : owned_)
+            if (o.hooks.drained && !o.hooks.drained(o.p)) {
+                all = false;
+                break;
+            }
+        if (all || now_ >= shutdown_deadline_) {
+            for (auto& o : owned_)
+                if (o.hooks.shutdown_write) o.hooks.shutdown_write(o.p);
+            stop();  // stage 5: run() returns, destructors hard-close
+            return;
+        }
+        after(1ms, [this](TimerCtx) { drain_step(); });
+    }
+
     // ---- stages
     // -----------------------------------------------------------------
     bool drain_mailbox() {
@@ -608,8 +717,37 @@ class BasicEventManager {
     }
 
     void dispatch_completions(int n) {
+        // M6-13: completion dispatch order across sinks is unspecified —
+        // shuffle it under AFX_DEBUG_CHAOS so tests can't depend on kernel
+        // return order.
+        chaos_shuffle_n(comp_buf_, std::size_t(n));
+        std::uint64_t rt = 0;
+        bool rt_taken = false;
         for (int i = 0; i < n; ++i) {
             const Completion& c = comp_buf_[i];
+            // M8-07 wire-level histograms. dequeue→handler uses the TSC the
+            // backend stamped at dequeue; kernel-side spans need the sw/hw
+            // stamps, which only exist when SO_TIMESTAMPING is enabled.
+            if (c.stamps.tsc) {
+                std::uint64_t dq = tsc_delta_to_ns(rdtsc() - c.stamps.tsc);
+                if (dq) latency_.dequeue_to_handler_ns.record(dq);
+            }
+            if (c.flags & CompletionFlag::HasSwStamp) {
+                if (!rt_taken) {
+                    rt = realtime_ns();  // one vDSO read per batch, not per op
+                    rt_taken = true;
+                }
+                if (rt > c.stamps.sw_ns) {
+                    latency_.kernel_to_dequeue_ns.record(rt - c.stamps.sw_ns);
+                    if (c.user.kind() == std::uint8_t(OpKind::Recv))
+                        latency_.recv_to_handler_ns.record(rt -
+                                                           c.stamps.sw_ns);
+                }
+                if ((c.flags & CompletionFlag::HasHwStamp) &&
+                    c.stamps.sw_ns > c.stamps.hw_ns)
+                    latency_.nic_to_kernel_ns.record(c.stamps.sw_ns -
+                                                     c.stamps.hw_ns);
+            }
             SinkHandle h{c.user.slot(), c.user.gen()};
             SinkEntry* s = sinks_.get(h);
             if (!s) continue;  // object closed while completion in flight
@@ -639,6 +777,8 @@ class BasicEventManager {
         // bytes; here each dirty connection emits one sendv.
         auto pending = std::move(pending_writes_);
         pending_writes_.clear();
+        // M6-13: flush order between connections is unspecified.
+        chaos_shuffle(pending);
         for (SinkHandle h : pending) {
             SinkEntry* s = sinks_.get(h);
             if (!s) continue;
@@ -666,7 +806,9 @@ class BasicEventManager {
         if (iter_fn_) iter_fn_(info);
 
         // Deferred reclamation (§13): slots released this iteration only
-        // return to the free list now.
+        // return to the free list now. M6-13: reclamation order is
+        // unspecified — shuffle so freelist order varies between runs.
+        chaos_shuffle(dead_timers_);
         for (TimerId id : dead_timers_) timers_.release(id);
         dead_timers_.clear();
         timers_.reclaim();
@@ -747,6 +889,7 @@ class BasicEventManager {
     EventManagerConfig config_;
     Clock clock_;
     Backend backend_;
+    Arena arena_;
     TimePoint now_{};
     std::atomic<bool> stop_{false};
     std::atomic<bool> running_{false};
@@ -769,7 +912,9 @@ class BasicEventManager {
     std::vector<Completion> comp_buf_;
     std::vector<Task> defer_next_, defer_run_;
 
-    std::vector<std::pair<void*, void (*)(void*)>> owned_;
+    std::vector<Owned> owned_;
+    bool shutting_down_ = false;
+    TimePoint shutdown_deadline_{};
 
     Context ctx_{};
     IdleFn idle_fn_;
@@ -783,14 +928,52 @@ class BasicEventManager {
     TimePoint spin_until_{};  // epoch default: blocks until first work
     bool blocked_ = false;
 
+#ifdef AFX_DEBUG_CHAOS
+    // M6-13: debug builds randomise order the design leaves unspecified
+    // (completion dispatch, write-flush order, slot reclamation) so test
+    // suites can't ossify against incidental implementation order.
+    std::mt19937_64 chaos_{std::random_device{}()};
+    template <class T>
+    void chaos_shuffle(std::vector<T>& v) {
+        if (v.size() > 1) std::shuffle(v.begin(), v.end(), chaos_);
+    }
+    template <class T>
+    void chaos_shuffle_n(std::vector<T>& v, std::size_t n) {
+        n = std::min(n, v.size());
+        if (n > 1) std::shuffle(v.begin(), v.begin() + n, chaos_);
+    }
+#else
+    template <class T>
+    void chaos_shuffle(std::vector<T>&) {}
+    template <class T>
+    void chaos_shuffle_n(std::vector<T>&, std::size_t) {}
+#endif
+
+    // M6-13: handle tables start at a random nonzero generation under chaos
+    // so no test can depend on generation 1 being the first issued.
+    static std::uint32_t first_gen_seed() noexcept {
+#ifdef AFX_DEBUG_CHAOS
+        static thread_local std::mt19937_64 rng{std::random_device{}()};
+        std::uint32_t g = std::uint32_t(rng());
+        return g ? g : 1;
+#else
+        return 1;
+#endif
+    }
+
     // Backend construction honoring config.backend when the backend type
     // accepts a BackendKind (AutoBackend); fixed-type backends ignore it.
+    // Backends that can take an sqpoll flag (AutoBackend) additionally see
+    // whether the wait strategy is Spin (M8-08).
     template <class B>
-    static B make_backend(BackendKind kind) {
-        if constexpr (std::constructible_from<B, BackendKind>)
+    static B make_backend(BackendKind kind, bool sqpoll) {
+        if constexpr (std::constructible_from<B, BackendKind, bool>)
+            return B{kind, sqpoll};
+        else if constexpr (std::constructible_from<B, BackendKind>)
             return B{kind};
         else {
             (void)kind;
+            (void)sqpoll;
             return B{};
         }
     }

@@ -66,7 +66,8 @@ class FlightRecorder {
         for (std::uint64_t i = 0; i < n; ++i) {
             auto idx = (h - n + i) & (kCapacity - 1);
             // best-effort; short writes are acceptable on a crash path
-            (void)::write(fd, &ring_[idx], sizeof(FlightRecord));
+            ssize_t ignored = ::write(fd, &ring_[idx], sizeof(FlightRecord));
+            (void)ignored;
         }
     }
 

@@ -147,6 +147,12 @@ class TimerWheel {
     // (repeating timers) or release them. Bounded by max_ticks_per_call.
     template <class F>
     void advance(std::uint64_t target_tick, F&& fire) {
+        // The wheel's epoch starts at 0 but a real clock's first target is
+        // millions of ticks ahead; a non-empty wheel cannot snap forward
+        // inside the loop (nodes sit in high-level buckets that only cascade
+        // at wrap boundaries), so anchor the epoch once: rehome every queued
+        // node relative to `target` and let the normal step drain the slot.
+        if (!primed_) prime(target_tick);
         // Empty wheel: nothing can cascade, so snap forward. On a real
         // clock the first advance must otherwise grind one step per tick
         // from epoch to now — millions of empty buckets per poll.
@@ -173,25 +179,64 @@ class TimerWheel {
     }
 
   private:
-    void cascade(int level) noexcept {
-        TimerNode* s =
-            &buckets_[level][(now_tick_ >> (8 * level)) & (kSlots - 1)];
-        // Move every node down to where its remaining distance belongs.
-        std::vector<TimerNode*> tmp;
-        for (TimerNode* n = s->bucket_next; n != s;) {
-            TimerNode* next = n->bucket_next;
-            tmp.push_back(n);
-            n = next;
-        }
-        for (TimerNode* n : tmp) {
+    // First advance(): move now_tick_ to `target` and re-place every queued
+    // node against it. Nodes armed before run() carry absolute ticks that the
+    // pre-prime insert() placed vs epoch 0 — without this they'd sit in a
+    // high-level bucket until the wheel ground through ~8e7 dead ticks.
+    // Overdue nodes clamp into the slot the upcoming step drains (like the
+    // cascade convention at now_tick_), so nothing lands in a dead slot.
+    void prime(std::uint64_t target) noexcept {
+        primed_ = true;
+        TimerNode hold;
+        detail::list_init(&hold);
+        for (auto& lvl : buckets_)
+            for (auto& s : lvl)
+                while (!detail::list_empty(&s)) {
+                    TimerNode* n = s.bucket_next;
+                    detail::list_unlink(n);
+                    detail::list_push_back(&hold, n);
+                }
+        count_ = 0;
+        now_tick_ = target ? target - 1 : 0;
+        const std::uint64_t min_et = target ? target : 1;
+        while (!detail::list_empty(&hold)) {
+            TimerNode* n = hold.bucket_next;
             detail::list_unlink(n);
-            --count_;
+            insert_node(
+                *n, n->expiry_tick > min_et ? n->expiry_tick : min_et,
+                now_tick_);
+        }
+    }
+
+    void cascade(int level) noexcept {
+        std::size_t home = (now_tick_ >> (8 * level)) & (kSlots - 1);
+        TimerNode* s = &buckets_[level][home];
+        // Move every node down to where its remaining distance belongs —
+        // in place, no scratch vector: allocations are forbidden on the hot
+        // path (M2-11 invariant). A node whose destination is this very slot
+        // stays put; anything else unlinks and reinserts, with the walk
+        // pointer captured before the move.
+        TimerNode* n = s->bucket_next;
+        while (n != s) {
+            TimerNode* next = n->bucket_next;
             // Cascades run before the current slot drains, so a node
             // landing exactly on now_tick_ belongs in the current slot —
             // do not apply the overdue clamp used by public insert().
             std::uint64_t et =
                 n->expiry_tick > now_tick_ ? n->expiry_tick : now_tick_;
-            insert_node(*n, et, now_tick_);
+            std::uint64_t d = et - now_tick_;
+            int lvl = 0;
+            while (d >= kSlots) {
+                d >>= 8;
+                ++lvl;
+            }
+            std::size_t dst = (et >> (8 * lvl)) & (kSlots - 1);
+            if (lvl != level || dst != home) {
+                detail::list_unlink(n);
+                --count_;
+                insert_node(*n, et, now_tick_);
+            }
+            n = next;
         }
     }
 
@@ -226,6 +271,7 @@ class TimerWheel {
 
     Nanos tick_;
     std::uint64_t now_tick_ = 0;
+    bool primed_ = false;
     std::size_t count_ = 0;
     std::size_t max_ticks_per_call_ = 4096;
     TimerNode buckets_[kLevels][kSlots];

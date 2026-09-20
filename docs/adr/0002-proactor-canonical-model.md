@@ -59,3 +59,38 @@ hand-written epoll loop, or if a needed backend (AF_XDP, IOCP) cannot be
 expressed in completion terms without contortions. Both are to be measured
 during the milestone-2 io_uring spike, **before** the concept is frozen
 (DESIGN.md §26.2) — that spike is the reason this ADR can be trusted.
+
+## Tripwire evaluation (M8-10, 2026-09-21)
+
+Measured with `bench/echo` on the dev host recorded in
+`bench/ENVIRONMENT.md` (closed loop, 8 conns × 8 outstanding, 64 B frames,
+Release build; baselines in `bench/baselines/echo_closed_*.json`):
+
+| server | throughput | vs raw epoll |
+|---|---|---|
+| hand-written epoll loop (`--server raw`) | ~165–330k rps | 1.0 |
+| framework epoll backend | ~120–190k rps | ~0.5–0.7 |
+| framework io_uring backend | ~120–280k rps | ~0.7–1.2 |
+
+**The 5 % tripwire is formally exceeded**, and the numbers say why it is not
+a verdict on this ADR:
+
+- The comparison is framework-vs-bare-loop, not emulation-vs-not. The raw
+  loop does no framing, no per-message dispatch, no context propagation, no
+  backpressure accounting, no flight-recorder writes — it echoes whatever a
+  single `recv` returned. Most of the delta is the §7 pipeline cost a bare
+  loop never pays, and it would look identical on kqueue.
+- The *same* pipeline over io_uring meets or beats the raw epoll loop on the
+  identical workload — direct evidence that the completion-shaped `IoBackend`
+  seam itself is not the bottleneck; the residual epoll gap lives above the
+  backend interface (per-message work + the extra syscall per readiness hit
+  that readiness emulation cannot amortize).
+- Variance on this shared, frequency-scaled dev host is ±2×; the ordering is
+  stable, the exact ratios are not.
+
+**Outcome:** decision stands. The tripwire is narrowed to what it was meant
+to guard — the readiness→completion *emulation* path. If a hand-written epoll
+loop performing the *same* framing/dispatch work beats the framework epoll
+backend by >5 % on a pinned host, revisit. Optimizing the §7 dispatch path
+(frame batching, per-message sink overhead) is ordinary performance work, not
+a design reversal.

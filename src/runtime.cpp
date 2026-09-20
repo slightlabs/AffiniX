@@ -6,9 +6,12 @@
 #include <sys/signalfd.h>
 #include <unistd.h>
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 
 #include "afx/sys/clock.hpp"
+#include "afx/sys/crash_dump.hpp"
+#include "afx/sys/numa.hpp"
 
 namespace afx {
 
@@ -74,6 +77,10 @@ void Runtime::start() {
     for (auto& [s, _] : signal_handlers_) sigaddset(&mask, s);
     if (!signal_handlers_.empty()) ::pthread_sigmask(SIG_BLOCK, &mask, nullptr);
 
+    // M7-08: flight-recorder dump on fault — the handler only touches the
+    // registered rings and write(2) (§21.1).
+    install_crash_dump();
+
     // Resolve placement per shard.
     auto phys = topo_.physical_cores();
     std::size_t phys_i = 0;
@@ -101,7 +108,10 @@ void Runtime::start() {
 
     if (!signal_handlers_.empty()) {
         // self-pipe created before the thread so shutdown() can always wake it
-        ::pipe(signal_selfpipe_);
+        if (::pipe(signal_selfpipe_) != 0) {
+            signal_selfpipe_[0] = signal_selfpipe_[1] = -1;
+            return;  // no wake path — signal thread can't run safely
+        }
         ::fcntl(signal_selfpipe_[0], F_SETFL, O_NONBLOCK);
         ::fcntl(signal_selfpipe_[1], F_SETFL, O_NONBLOCK);
         signal_thread_ = std::thread([this] { signal_thread_main(); });
@@ -130,6 +140,36 @@ void Runtime::thread_main(Shard& s, int core) {
     }
 
     EventManager em(std::move(s.cfg.em));
+
+    // M5-07: placement is logged once at startup, always (§19). The line
+    // names shard, core, NUMA node and wait strategy so a misplacement is
+    // discoverable from stderr without attaching a profiler.
+    int node = core >= 0 ? topo_.numa_node_of(core) : numa::current_node();
+    const char* wait = s.cfg.em.wait == WaitStrategy::Block       ? "block"
+                       : s.cfg.em.wait == WaitStrategy::SpinThenBlock
+                           ? "spin-then-block"
+                           : "spin";
+    if (core >= 0)
+        std::fprintf(stderr, "afx: shard '%s' -> core %d (numa %d) wait=%s\n",
+                     s.name.c_str(), core, node, wait);
+    else
+        std::fprintf(stderr, "afx: shard '%s' -> unpinned (numa %d) wait=%s\n",
+                     s.name.c_str(), node, wait);
+
+    // M5-06: a shard bound to a different NUMA node than its NIC pays for
+    // every packet in cross-node traffic. Warn loudly rather than silently
+    // accept it (§19).
+    if (!s.cfg.nic_ifname.empty()) {
+        if (auto nic_node = topo_.numa_node_of_nic(s.cfg.nic_ifname)) {
+            if (node >= 0 && *nic_node >= 0 && *nic_node != node)
+                std::fprintf(stderr,
+                             "afx: WARNING shard '%s' on numa %d but NIC '%s' "
+                             "is on numa %d\n",
+                             s.name.c_str(), node, s.cfg.nic_ifname.c_str(),
+                             *nic_node);
+        }
+    }
+
     s.em.store(&em, std::memory_order_release);
     s.ready.store(true, std::memory_order_release);
 
@@ -163,17 +203,29 @@ void Runtime::signal_thread_main() {
     ::close(signal_selfpipe_[1]);
 }
 
-void Runtime::shutdown(Duration) {
+void Runtime::shutdown(Duration timeout) {
     bool expected = false;
     if (!stopping_.compare_exchange_strong(expected, true)) return;
-    // Drain sequence (§20): tell each EM to stop; EMs close listeners and
-    // connections as their own teardown runs.
-    for (auto& s : shards_)
-        if (EventManager* e = s->em.load(std::memory_order_acquire)) e->stop();
+    // §20 drain sequence, run on each EM's own thread via its mailbox:
+    // listeners close -> apps notified -> writes drain until the deadline ->
+    // shutdown_write -> loop stops and destructors hard-close the rest.
+    // EMs that are not running fall back to a plain stop() (they will run
+    // their destructor teardown when the thread unwinds).
+    TimePoint deadline = SteadyClock{}.now() + timeout;
+    for (auto& s : shards_) {
+        EventManager* e = s->em.load(std::memory_order_acquire);
+        if (!e) continue;
+        if (e->is_running() &&
+            e->post([e, deadline] { e->begin_shutdown(deadline); }) ==
+                PostResult::Ok)
+            continue;
+        e->stop();
+    }
     signal_stop_.store(true, std::memory_order_release);
     if (signal_selfpipe_[1] >= 0) {
         char b = 1;
-        (void)::write(signal_selfpipe_[1], &b, 1);
+        ssize_t ignored = ::write(signal_selfpipe_[1], &b, 1);
+        (void)ignored;
     }
 }
 

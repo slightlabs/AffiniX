@@ -7,6 +7,7 @@ project(AffiniX VERSION 0.1.0 LANGUAGES CXX)
 option(AFX_BUILD_TESTS       "Build unit/integration tests"   ON)
 option(AFX_BUILD_BENCH       "Build benchmarks"               OFF)
 option(AFX_BUILD_EXAMPLES    "Build examples"                 ON)
+option(AFX_BUILD_TOOLS       "Build tools (afx-load)"         ON)
 option(AFX_WITH_URING        "Build the io_uring backend"     ON)
 option(AFX_WITH_TIMESTAMPING "SO_TIMESTAMPING support"        OFF)
 option(AFX_FLIGHT_RECORDER   "Always-on per-EM flight recorder" ON)
@@ -26,6 +27,8 @@ add_library(afx STATIC
   src/sys/clock.cpp
   src/sys/topology.cpp
   src/sys/affinity.cpp
+  src/sys/numa.cpp
+  src/sys/crash_dump.cpp
   src/backend/epoll.cpp
   src/backend/sim.cpp
   src/net/socket.cpp
@@ -94,4 +97,8 @@ endif()
 
 if(AFX_BUILD_EXAMPLES)
   add_subdirectory(examples)
+endif()
+
+if(AFX_BUILD_TOOLS)
+  add_subdirectory(tools)
 endif()

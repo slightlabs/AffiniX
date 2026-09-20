@@ -35,6 +35,22 @@ struct PostedItem {
 
 enum class MailboxState : std::uint8_t { Running = 0, Blocked = 1 };
 
+struct MailboxImpl;
+
+namespace detail {
+// M8-05 optional wake fast-path (§8.1): when the posting thread runs an EM
+// whose backend can submit io_uring MSG_RING, this bridge submits on the
+// SENDER's ring (the SQ is single-producer, so only the owning thread may
+// ever use it — foreign threads take the wake_fn path as before). Set by
+// BasicEventManager::run() for the duration of the loop.
+struct WakeBridge {
+    void* backend = nullptr;
+    bool (*send_msg_ring)(void* backend, int target_ring_fd,
+                          const std::weak_ptr<MailboxImpl>& target) = nullptr;
+};
+inline thread_local WakeBridge wake_bridge{};
+}  // namespace detail
+
 // The shared state. Owned by an EventManager; Mailboxes hold a shared_ptr so
 // posting to a dead EM degrades to PostResult::Closed, never a dangling write.
 struct MailboxImpl {
@@ -48,6 +64,10 @@ struct MailboxImpl {
     // Wake thunk into the consumer's backend (eventfd write, or a sim hook).
     void (*wake_fn)(void*) = nullptr;
     void* wake_ctx = nullptr;
+
+    // io_uring ring fd of the owning EM's backend, or -1. Published once at
+    // EM construction before the mailbox can be shared (M8-05).
+    int msgring_fd = -1;
 
     // Counters mirrored into Stats by the consumer on drain.
     std::atomic<std::uint64_t> pushes{0};
@@ -145,8 +165,17 @@ class Mailbox {
     void after_push() const {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if (impl_->state.load(std::memory_order_seq_cst) ==
-            MailboxState::Blocked)
+            MailboxState::Blocked) {
+            // M8-05: prefer a MSG_RING posted from this thread's own ring
+            // when both ends are io_uring; the send-CQE's failure path still
+            // falls back to the eventfd thunk, so a wake is never lost.
+            if (impl_->msgring_fd >= 0 && detail::wake_bridge.backend &&
+                detail::wake_bridge.send_msg_ring(
+                    detail::wake_bridge.backend, impl_->msgring_fd,
+                    std::weak_ptr<MailboxImpl>(impl_)))
+                return;
             if (impl_->wake_fn) impl_->wake_fn(impl_->wake_ctx);
+        }
     }
 
     static std::uint64_t rdtsc_light() noexcept {

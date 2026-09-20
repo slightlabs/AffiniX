@@ -1,0 +1,71 @@
+{
+  "benchmark": "bench/echo (open_uring loop)",
+  "workload": "open loop, 8 conns, 120k offered rps, 64B payload, framework io_uring server",
+  "env": {
+    "cpu": "Intel Core i5-4300U @ 1.90 GHz (2C/4T, Haswell)",
+    "kernel": "Linux 7.0.0-31-generic",
+    "governor": "schedutil",
+    "numa": "1 node",
+    "compiler": "g++ 15.2.0",
+    "build": "Release (-O3), AFX_FLIGHT_RECORDER=on",
+    "class": "shared dev host \u2014 smoke-level reference, not a pinned bench machine",
+    "date": "2026-09-21"
+  },
+  "metrics": {
+    "benchmark": "echo",
+    "server_backend": "uring",
+    "load_backend": "uring",
+    "mode": "open",
+    "conns": 8,
+    "payload": 64,
+    "duration_s": 4.001,
+    "sends": 479840,
+    "replies": 479840,
+    "errors": 0,
+    "throughput_rps": 119917,
+    "latency_ns": {
+      "count": 360244,
+      "min": 245804,
+      "p50": 2097152,
+      "p90": 4194304,
+      "p99": 8388608,
+      "p999": 16777216,
+      "max": 29633584,
+      "mean": 3203046
+    },
+    "buckets": [
+      {
+        "floor_ns": 131072,
+        "count": 4
+      },
+      {
+        "floor_ns": 262144,
+        "count": 38
+      },
+      {
+        "floor_ns": 524288,
+        "count": 573
+      },
+      {
+        "floor_ns": 1048576,
+        "count": 79967
+      },
+      {
+        "floor_ns": 2097152,
+        "count": 234245
+      },
+      {
+        "floor_ns": 4194304,
+        "count": 35542
+      },
+      {
+        "floor_ns": 8388608,
+        "count": 7312
+      },
+      {
+        "floor_ns": 16777216,
+        "count": 2563
+      }
+    ]
+  }
+}

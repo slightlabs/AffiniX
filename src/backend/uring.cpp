@@ -12,18 +12,27 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "afx/itc/mailbox.hpp"
 #include "afx/net/sock_addr.hpp"
 #include "afx/sys/clock.hpp"
+#include "afx/sys/timestamping.hpp"
 
 namespace afx {
 
 namespace {
 
 // Internal completion tags: kind byte 0xFF never collides with OpKind.
+// The gen field distinguishes sub-tags; for MSG_RING sends the slot field
+// carries the msgring_fb_ index.
 constexpr std::uint8_t kInternalKind = 0xFF;
 constexpr std::uint64_t kWakeTag = UserData::make(kInternalKind, 0, 0).raw;
 constexpr std::uint64_t kCancelTag = UserData::make(kInternalKind, 0, 1).raw;
 constexpr std::uint64_t kRemoveTag = UserData::make(kInternalKind, 0, 2).raw;
+// Delivered into the TARGET ring's CQ by MSG_RING (data field).
+constexpr std::uint64_t kMsgRingWakeTag =
+    UserData::make(kInternalKind, 0, 3).raw;
+// Sender-side send-done CQE sub-id; slot field = msgring_fb_ index.
+constexpr std::uint32_t kMsgRingDoneSub = 4;
 
 inline bool is_internal(std::uint64_t tag) noexcept {
     return (tag >> 56) == kInternalKind;
@@ -95,6 +104,10 @@ UringBackend& UringBackend::operator=(UringBackend&& o) noexcept {
     cq_tail_ = o.cq_tail_;
     cq_mask_ = o.cq_mask_;
     cqes_ = o.cqes_;
+    sq_flags_ = o.sq_flags_;
+    cq_overflow_ = o.cq_overflow_;
+    o.sq_flags_ = nullptr;
+    o.cq_overflow_ = nullptr;
     o.sq_head_ = o.sq_tail_ = o.sq_mask_ = o.sq_entries_ = nullptr;
     o.sq_array_ = nullptr;
     o.sqes_ = nullptr;
@@ -127,6 +140,17 @@ UringBackend& UringBackend::operator=(UringBackend&& o) noexcept {
     pbuf_mask_ = o.pbuf_mask_;
     pbuf_bgid_ = o.pbuf_bgid_;
     recv_dst_ = std::move(o.recv_dst_);
+    // Node-based maps: element addresses (and the ctx pointers in
+    // ts_pending_) survive the move intact.
+    ts_ctx_ = std::move(o.ts_ctx_);
+    ts_pending_ = std::move(o.ts_pending_);
+    msgring_ok_ = o.msgring_ok_;
+    sqpoll_ = o.sqpoll_;
+    msgring_sends_ = o.msgring_sends_;
+    msgring_fallbacks_ = o.msgring_fallbacks_;
+    msgring_head_ = o.msgring_head_;
+    for (std::size_t i = 0; i < kMsgringSlots; ++i)
+        msgring_fb_[i] = std::move(o.msgring_fb_[i]);
     return *this;
 }
 
@@ -166,8 +190,21 @@ Result<UringCaps> UringBackend::probe() {
 int UringBackend::init(const UringConfig& cfg) noexcept {
     multishot_accept_ = cfg.multishot_accept;
     io_uring_params p{};
+    if (cfg.sqpoll) {
+        p.flags |= IORING_SETUP_SQPOLL;
+        p.sq_thread_idle = cfg.sqpoll_idle_ms;
+    }
     ring_fd_ = uring_setup(cfg.sq_entries, &p);
+    if (ring_fd_ < 0 && cfg.sqpoll) {
+        // SQPOLL can be denied (rlimits, older kernels): degrade to a normal
+        // ring rather than losing io_uring entirely (§9.5 fallback spirit).
+        p = io_uring_params{};
+        ring_fd_ = uring_setup(cfg.sq_entries, &p);
+    } else if (ring_fd_ >= 0 && cfg.sqpoll) {
+        sqpoll_ = true;
+    }
     if (ring_fd_ < 0) return -errno;
+    msgring_ok_ = cfg.msg_ring_wakes && msg_ring_supported();
 
     std::size_t sq_ring_sz =
         p.sq_off.array + p.sq_entries * sizeof(std::uint32_t);
@@ -214,6 +251,8 @@ int UringBackend::init(const UringConfig& cfg) noexcept {
         sq_mask_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.ring_mask);
         sq_entries_ =
             reinterpret_cast<std::uint32_t*>(base + p.sq_off.ring_entries);
+        sq_flags_ =
+            reinterpret_cast<std::uint32_t*>(base + p.sq_off.flags);
         sq_array_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.array);
         sqes_ = static_cast<io_uring_sqe*>(sqes_map_);
     }
@@ -222,6 +261,8 @@ int UringBackend::init(const UringConfig& cfg) noexcept {
         cq_head_ = reinterpret_cast<std::uint32_t*>(base + p.cq_off.head);
         cq_tail_ = reinterpret_cast<std::uint32_t*>(base + p.cq_off.tail);
         cq_mask_ = reinterpret_cast<std::uint32_t*>(base + p.cq_off.ring_mask);
+        cq_overflow_ =
+            reinterpret_cast<std::uint32_t*>(base + p.cq_off.overflow);
         cqes_ = reinterpret_cast<io_uring_cqe*>(base + p.cq_off.cqes);
     }
 
@@ -366,6 +407,22 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
                 // its push may post-date the EM's last mailbox check, so the
                 // loop must re-drain before it is allowed to block again.
                 saw_wake_ = true;
+            } else if (cqe.user_data == kMsgRingWakeTag) {
+                // M8-05: a peer EM's MSG_RING posted into our CQ — same
+                // semantics as the eventfd wake firing.
+                saw_wake_ = true;
+            } else if (std::uint32_t(cqe.user_data) == kMsgRingDoneSub) {
+                // Our MSG_RING send completed. On failure the wake never
+                // reached the target — fire its eventfd thunk instead.
+                std::size_t slot =
+                    (cqe.user_data >> 32) & (kMsgringSlots - 1);
+                MsgringSlot& fb = msgring_fb_[slot];
+                if (cqe.res < 0) {
+                    ++msgring_fallbacks_;
+                    if (auto t = fb.target.lock())
+                        if (t->wake_fn) t->wake_fn(t->wake_ctx);
+                }
+                fb = MsgringSlot{};
             }
             continue;
         }
@@ -395,6 +452,13 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
                 c.result = cqe.res;
                 break;
             case std::uint8_t(OpKind::Recv): {
+                if (auto tit = ts_pending_.find(cqe.user_data);
+                    tit != ts_pending_.end()) {
+                    if (cqe.res > 0)
+                        c.flags |= parse_rx_timestamping(tit->second->msg,
+                                                       c.stamps);
+                    ts_pending_.erase(tit);
+                }
                 auto it = recv_dst_.find(cqe.user_data);
                 if (it != recv_dst_.end()) {
                     // Provided-buffer mode: copy into the caller's span and
@@ -521,7 +585,21 @@ Result<void> UringBackend::detach(int fd) {
     s->addr = it->second.raw;
     s->user_data = kRemoveTag;
     watch_.erase(it);
+    ts_ctx_.erase(fd);
     return {};
+}
+
+void UringBackend::set_timestamping(int fd, bool on) {
+    if (!on) {
+        ts_ctx_.erase(fd);
+        return;
+    }
+    auto& ctx = ts_ctx_[fd];  // persistent: kernel reads msg at op execution
+    ctx.msg = msghdr{};
+    ctx.msg.msg_iov = &ctx.iov;
+    ctx.msg.msg_iovlen = 1;
+    ctx.msg.msg_control = ctx.cbuf;
+    ctx.msg.msg_controllen = sizeof(ctx.cbuf);
 }
 
 // ---------------------------------------------------------------------------
@@ -531,21 +609,33 @@ Result<void> UringBackend::detach(int fd) {
 Result<void> UringBackend::submit_recv(UserData u, int fd, MutByteSpan buf) {
     if (pbuf_ && recv_dst_.contains(u.raw))
         return make_error(ErrorCategory::Internal, Err::Invalid);
+    auto tsit = ts_ctx_.find(fd);
     io_uring_sqe* s = alloc_sqe();
     if (!s) {
         if (auto r = flush_full_sq(); !r) return r;
         s = alloc_sqe();
         if (!s) return Err::Full;
     }
-    s->opcode = IORING_OP_RECV;
     s->fd = fd;
     s->user_data = u.raw;
-    if (pbuf_) {
+    if (tsit != ts_ctx_.end()) {
+        // RECVMSG surfaces SO_TIMESTAMPING RX cmsgs into ctx.cbuf; parsed in
+        // drain_cq. Overrides the provided-buffer path for this fd.
+        RecvmsgCtx& ctx = tsit->second;
+        ctx.iov.iov_base = buf.data();
+        ctx.iov.iov_len = buf.size();
+        s->opcode = IORING_OP_RECVMSG;
+        s->addr = reinterpret_cast<std::uint64_t>(&ctx.msg);
+        s->msg_flags = MSG_NOSIGNAL;
+        ts_pending_[u.raw] = &ctx;
+    } else if (pbuf_) {
+        s->opcode = IORING_OP_RECV;
         s->flags |= IOSQE_BUFFER_SELECT;
         s->buf_group = pbuf_bgid_;
         s->len = std::uint32_t(pbuf_backing_.size() / (pbuf_mask_ + 1));
         recv_dst_[u.raw] = buf;
     } else {
+        s->opcode = IORING_OP_RECV;
         s->addr = reinterpret_cast<std::uint64_t>(buf.data());
         s->len = std::uint32_t(buf.size());
     }
@@ -668,7 +758,23 @@ int UringBackend::wait(std::span<Completion> out, Nanos timeout) {
     // post-date the EM's mailbox recheck, and with the wake already spent
     // nothing would interrupt the block (eventfd-style edge, not level).
     bool can_wait = n == 0 && !saw_wake_ && timeout > Nanos::zero();
-    if (sub > 0 || can_wait) {
+    if (sqpoll_) {
+        // M8-08 SQPOLL: the kernel thread drains the SQ; the submit syscall
+        // is only needed to wake the sq thread once it parks (NEED_WAKEUP),
+        // and to block on the CQ when the EM is allowed to sleep.
+        if (__atomic_load_n(sq_flags_, __ATOMIC_ACQUIRE) &
+            IORING_SQ_NEED_WAKEUP)
+            uring_enter(ring_fd_, 0, 0, IORING_ENTER_SQ_WAKEUP, nullptr, 0);
+        if (can_wait) {
+            __kernel_timespec ts{timeout.count() / 1'000'000'000,
+                                 timeout.count() % 1'000'000'000};
+            io_uring_getevents_arg arg{};
+            arg.ts = std::uint64_t(&ts);
+            uring_enter(ring_fd_, 0, 1,
+                        IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG, &arg,
+                        sizeof(arg));
+        }
+    } else if (sub > 0 || can_wait) {
         if (can_wait) {
             // EXT_ARG: absolute deadline is not needed — relative timespec.
             __kernel_timespec ts{timeout.count() / 1'000'000'000,
@@ -694,10 +800,49 @@ void UringBackend::wake() {
 }
 
 // ---------------------------------------------------------------------------
+// MSG_RING cross-EM wake (M8-05)
+// ---------------------------------------------------------------------------
+
+bool UringBackend::msg_ring_supported() {
+    // Probed once per process; MSG_RING needs kernel >= 5.18.
+    static const bool ok = [] {
+        auto caps = UringBackend::probe();
+        return caps && caps->supports(IORING_OP_MSG_RING);
+    }();
+    return ok;
+}
+
+bool UringBackend::msg_ring_wake(
+    int target_fd, const std::weak_ptr<MailboxImpl>& target) {
+    if (!msgring_ok_ || target_fd < 0) return false;
+    std::size_t slot = msgring_head_++ & (kMsgringSlots - 1);
+    if (msgring_fb_[slot].target.use_count() != 0)
+        return false;  // slot still in flight — caller falls back to eventfd
+    io_uring_sqe* s = alloc_sqe();
+    if (!s) {
+        if (auto r = flush_full_sq(); !r) return false;
+        s = alloc_sqe();
+        if (!s) return false;
+    }
+    msgring_fb_[slot].target = target;
+    // IORING_MSG_DATA: off → target cqe.user_data, len → target cqe.res.
+    s->opcode = IORING_OP_MSG_RING;
+    s->fd = target_fd;
+    s->addr = IORING_MSG_DATA;
+    s->off = kMsgRingWakeTag;
+    s->len = 0;
+    s->user_data = UserData::make(kInternalKind, std::uint32_t(slot),
+                                  kMsgRingDoneSub)
+                       .raw;
+    ++msgring_sends_;
+    return true;  // staged; rides this thread's next submission
+}
+
+// ---------------------------------------------------------------------------
 // AutoBackend — runtime selection (§9.5)
 // ---------------------------------------------------------------------------
 
-AutoBackend::AutoBackend(BackendKind kind) {
+AutoBackend::AutoBackend(BackendKind kind, bool sqpoll) {
     // Probe before committing: ring setup must succeed and every op the
     // backend issues must be supported, else stay on epoll.
     bool ok = kind != BackendKind::Epoll;
@@ -720,7 +865,9 @@ AutoBackend::AutoBackend(BackendKind kind) {
         }
     }
     if (ok) {
-        if (auto b = UringBackend::create()) {
+        UringConfig ucfg;
+        ucfg.sqpoll = sqpoll;
+        if (auto b = UringBackend::create(ucfg)) {
             impl_.emplace<UringBackend>(std::move(*b));
             kind_ = BackendKind::Uring;
             return;
@@ -762,6 +909,27 @@ Result<void> AutoBackend::submit_connect(UserData u, int fd,
 }
 Result<void> AutoBackend::cancel(UserData u) {
     return std::visit([&](auto& b) { return b.cancel(u); }, impl_);
+}
+void AutoBackend::set_timestamping(int fd, bool on) {
+    std::visit([&](auto& b) { b.set_timestamping(fd, on); }, impl_);
+}
+int AutoBackend::wake_ring_fd() const noexcept {
+    return std::visit([](const auto& b) { return b.wake_ring_fd(); }, impl_);
+}
+bool AutoBackend::msg_ring_wake(int fd,
+                                const std::weak_ptr<MailboxImpl>& target) {
+    return std::visit(
+        [&](auto& b) -> bool {
+            if constexpr (requires {
+                              {
+                                  b.msg_ring_wake(fd, target)
+                              } -> std::same_as<bool>;
+                          })
+                return b.msg_ring_wake(fd, target);
+            else
+                return false;  // epoll impl: caller falls back to eventfd
+        },
+        impl_);
 }
 int AutoBackend::wait(std::span<Completion> out, Nanos timeout) {
     return std::visit([&](auto& b) { return b.wait(out, timeout); }, impl_);

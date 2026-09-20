@@ -8,8 +8,10 @@
 #ifdef AFX_WITH_URING
 
 #include <linux/io_uring.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -17,6 +19,7 @@
 
 #include "afx/backend/uring.hpp"
 #include "afx/core/event_manager.hpp"
+#include "afx/itc/mailbox.hpp"
 #include "afx/net/sock_addr.hpp"
 #include "afx/net/socket.hpp"
 
@@ -370,6 +373,119 @@ TEST_CASE("uring backend: drives a BasicEventManager end to end") {
     for (int i = 0; i < 100 && !ready; ++i) em.poll_once();
     CHECK(ready);
     em.unwatch(*id);
+}
+
+TEST_CASE("uring backend: MSG_RING cross-EM wake") {
+    auto ra = UringBackend::create();
+    auto rb = UringBackend::create();
+    if (!ra || !rb) {
+        MESSAGE("io_uring unavailable — skipping");
+        return;
+    }
+    if (ra->wake_ring_fd() < 0 || rb->wake_ring_fd() < 0) {
+        MESSAGE("MSG_RING unsupported on this kernel — skipping");
+        return;
+    }
+
+    using EM = BasicEventManager<SteadyClock, UringBackend>;
+    EM em_a(EventManagerConfig{.wait = WaitStrategy::Spin}, SteadyClock{},
+            std::move(*ra));
+    EM em_b(EventManagerConfig{.wait = WaitStrategy::Block}, SteadyClock{},
+            std::move(*rb));
+
+    std::atomic<bool> delivered{false};
+    Mailbox mb_b = em_b.mailbox();
+
+    std::thread ta([&] { em_a.run(); });
+    std::thread tb([&] { em_b.run(); });
+
+    // Wait until B is actually Blocked — posting earlier would land while B
+    // is still Running and need no wake at all, testing nothing.
+    auto t0 = std::chrono::steady_clock::now();
+    while (em_b.stats().blocks == 0 &&
+           std::chrono::steady_clock::now() - t0 < 2s)
+        std::this_thread::sleep_for(1ms);
+    REQUIRE(em_b.stats().blocks >= 1);
+
+    // Post into A's loop; that task posts to B's mailbox from A's thread,
+    // where the MSG_RING wake bridge is installed.
+    std::atomic<bool> posted{false};
+    em_a.mailbox().post([&] {
+        mb_b.post([&] { delivered.store(true); });
+        posted.store(true);
+    });
+
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!delivered.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+
+    em_a.stop();
+    em_b.stop();
+    ta.join();
+    tb.join();
+
+    CHECK(delivered.load());
+    CHECK(posted.load());
+    // The wake must have used the MSG_RING path, not silently fallen back.
+    CHECK(em_a.backend().msgring_sends() >= 1);
+    CHECK(em_a.backend().msgring_fallbacks() == 0);
+}
+
+TEST_CASE("uring backend: MSG_RING to a closed ring falls back to eventfd") {
+    auto ra = UringBackend::create();
+    if (!ra) {
+        MESSAGE("io_uring unavailable — skipping");
+        return;
+    }
+    if (ra->wake_ring_fd() < 0) {
+        MESSAGE("MSG_RING unsupported — skipping");
+        return;
+    }
+    // A bogus-but-open fd that is not a ring: the send CQE returns -EBADF
+    // and the recorded mailbox fallback must fire instead.
+    int not_a_ring = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    REQUIRE(not_a_ring >= 0);
+    auto impl = std::make_shared<MailboxImpl>(16);
+    std::atomic<int> wakes{0};
+    impl->wake_fn = [](void* p) { ++*static_cast<std::atomic<int>*>(p); };
+    impl->wake_ctx = &wakes;
+
+    CHECK(ra->msg_ring_wake(not_a_ring, std::weak_ptr<MailboxImpl>(impl)));
+    Completion out[8];
+    for (int i = 0; i < 60 && wakes.load() == 0; ++i)
+        ra->wait(out, 50ms);  // submit the SQE, drain the failed send CQE
+    ::close(not_a_ring);
+    CHECK(ra->msgring_fallbacks() >= 1);
+    CHECK(wakes.load() >= 1);
+}
+
+TEST_CASE("uring backend: SQPOLL mode submits without syscalls") {
+    UringConfig cfg;
+    cfg.sqpoll = true;
+    auto res = UringBackend::create(cfg);
+    if (!res) {
+        MESSAGE("io_uring unavailable — skipping");
+        return;
+    }
+    auto& b = *res;
+    MESSAGE("sqpoll active: ", b.sqpoll());  // false = graceful degrade
+    CHECK(b.valid());
+
+    // Whatever the outcome, the ring must still do I/O.
+    SocketPair sp;
+    REQUIRE(sp.a >= 0);
+    std::byte buf[16]{};
+    REQUIRE(
+        b.submit_recv(tag(OpKind::Recv), sp.a, MutByteSpan(buf)).has_value());
+    const char msg[] = "sqp";
+    REQUIRE(::write(sp.b, msg, sizeof(msg)) == ssize_t(sizeof(msg)));
+
+    CompStash stash;
+    Completion c = find_completion(b, stash, tag(OpKind::Recv).raw);
+    REQUIRE(c.user.raw == tag(OpKind::Recv).raw);
+    CHECK(c.result == ssize_t(sizeof(msg)));
+    CHECK(std::memcmp(buf, msg, sizeof(msg)) == 0);
+    CHECK(b.cq_overflows() == 0);
 }
 
 TEST_CASE("auto backend: picks a working backend and logs its kind") {

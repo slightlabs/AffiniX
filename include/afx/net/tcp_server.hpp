@@ -7,6 +7,7 @@
 #include <memory>
 #include <unordered_map>
 
+#include "afx/core/pool.hpp"
 #include "afx/net/connection.hpp"
 #include "afx/net/socket.hpp"
 
@@ -32,7 +33,12 @@ class TcpServer {
     using Conn = Connection<P, EM>;
 
     TcpServer(EM& em, ServerConfig cfg, Handlers<P> handlers)
-        : em_(&em), cfg_(std::move(cfg)), handlers_(std::move(handlers)) {}
+        : em_(&em),
+          cfg_(std::move(cfg)),
+          handlers_(std::move(handlers)),
+          // M6-02: connection objects come from the EM's NUMA-local arena;
+          // heap_chunks() exposes every fallback, no hidden growth.
+          pool_(&em.arena()) {}
 
     ~TcpServer() {
         // Move conns_ out before closing: close() may synchronously invoke
@@ -44,8 +50,10 @@ class TcpServer {
         // the now-empty member map.
         auto conns = std::move(conns_);
         conns_.clear();
-        for (auto& [k, c] : conns) c->close(CloseReason::Shutdown);
-        conns.clear();
+        for (auto& [k, c] : conns) {
+            c->close(CloseReason::Shutdown);
+            pool_.destroy(c);
+        }
         if (listen_fd_ >= 0) {
             em_->backend_detach(listen_fd_);
             ::close(listen_fd_);
@@ -80,11 +88,39 @@ class TcpServer {
 
     Connection<P, EM>* conn(ConnId id) {
         auto it = conns_.find(key(id));
-        return it == conns_.end() ? nullptr : it->second.get();
+        return it == conns_.end() ? nullptr : it->second;
     }
 
     void close_conn(ConnId id, CloseReason r) {
         if (auto* c = conn(id)) c->close(r);
+    }
+
+    // ---- §20 drain-sequence hooks (registered with the EM at open) ---------
+    static void hooks_begin(void* p) { static_cast<TcpServer*>(p)->stop_accepting(); }
+    static void hooks_notify(void* p) { static_cast<TcpServer*>(p)->notify_shutdown(); }
+    static bool hooks_drained(void* p) { return static_cast<TcpServer*>(p)->drained(); }
+    static void hooks_shutdown_write(void* p) {
+        static_cast<TcpServer*>(p)->half_close_all();
+    }
+
+    void stop_accepting() {
+        if (listen_fd_ < 0) return;
+        em_->backend_cancel(accept_sink_, OpKind::Accept);
+        em_->backend_detach(listen_fd_);
+        ::close(listen_fd_);
+        listen_fd_ = -1;
+    }
+    void notify_shutdown() {
+        if (!handlers_.on_shutdown) return;
+        for (auto& [k, c] : conns_) handlers_.on_shutdown(c->id());
+    }
+    bool drained() const noexcept {
+        for (auto& [k, c] : conns_)
+            if (c->queued_write_bytes() > 0) return false;
+        return true;
+    }
+    void half_close_all() {
+        for (auto& [k, c] : conns_) c->shutdown_write();
     }
 
   private:
@@ -131,27 +167,38 @@ class TcpServer {
 
         typename Conn::Params params{cfg_.flow, cfg_.idle_read_timeout,
                                      cfg_.idle_write_timeout,
-                                     em_->config().memory.read_buffer_size};
-        auto conn = std::make_unique<Conn>(*em_, cfd, handlers_, params, this,
-                                           &TcpServer::on_conn_gone);
+                                     em_->config().memory.read_buffer_size,
+                                     cfg_.sock.timestamping};
+        Conn* conn = pool_.construct(*em_, cfd, handlers_, params, this,
+                                     &TcpServer::on_conn_gone);
+        if (!conn) {
+            ::close(cfd);
+            return;  // pool OOM: refuse the connection rather than grow
+        }
         ConnId id = conn->id();
-        conns_[key(id)] = std::move(conn);
+        conns_[key(id)] = conn;
         ++em_->stats().conns_opened;
         em_->recorder().record(EventKind::Accept, id.idx, std::uint32_t(cfd));
         conns_[key(id)]->start(peer);
     }
 
     static void on_conn_gone(void* self, ConnId id, CloseReason) {
-        static_cast<TcpServer*>(self)->conns_.erase(key(id));
+        auto* s = static_cast<TcpServer*>(self);
+        auto it = s->conns_.find(key(id));
+        if (it == s->conns_.end()) return;
+        Conn* c = it->second;
+        s->conns_.erase(it);
+        s->pool_.destroy(c);
     }
 
     EM* em_;
     ServerConfig cfg_;
     Handlers<P> handlers_;
+    Pool<Conn> pool_;
     int listen_fd_ = -1;
     SockAddr bound_{};
     typename EM::SinkHandle accept_sink_{};
-    std::unordered_map<std::uint64_t, std::unique_ptr<Conn>> conns_;
+    std::unordered_map<std::uint64_t, Conn*> conns_;
     static inline char type_tag_{};
 };
 
@@ -166,7 +213,10 @@ BasicEventManager<C, B>::make_server(ServerConfig cfg, H&& handlers) {
         delete s;
         return r.error();
     }
-    own(s, [](void* p) { delete static_cast<Srv*>(p); });
+    typename BasicEventManager::ShutdownHooks hooks{
+        &Srv::hooks_begin, &Srv::hooks_notify, &Srv::hooks_drained,
+        &Srv::hooks_shutdown_write};
+    own(s, [](void* p) { delete static_cast<Srv*>(p); }, hooks);
     return s;
 }
 

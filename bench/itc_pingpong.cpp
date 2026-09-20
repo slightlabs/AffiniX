@@ -53,6 +53,7 @@ int main() {
                 }
             }
         });
+        afx::bench::collect(b);
         em.stop();
         t.join();
     }
@@ -68,7 +69,10 @@ int main() {
             (void)em.post([&] { ++n; });
             ankerl::nanobench::doNotOptimizeAway(n);
         });
+        afx::bench::collect(b);
         em.stop();
         t.join();
     }
+
+    afx::bench::flush_json();
 }

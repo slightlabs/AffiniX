@@ -30,6 +30,7 @@ int main() {
                 tx.try_push(1);
                 rx.poll();
             });
+            afx::bench::collect(b);
         }
         // Bulk push + batch drain.
         {
@@ -42,6 +43,7 @@ int main() {
                 tx.try_push_bulk(batch);
                 rx.poll();
             });
+            afx::bench::collect(b);
         }
     }
 
@@ -53,7 +55,9 @@ int main() {
             ring.try_push(1);
             ring.drain([&](std::uint64_t v) { sink += v; }, 1);
         });
+        afx::bench::collect(b);
     }
 
     ankerl::nanobench::doNotOptimizeAway(sink);
+    afx::bench::flush_json();
 }

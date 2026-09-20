@@ -10,6 +10,14 @@ FetchContent_Declare(nanobench
   GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(nanobench)
 
+# M8-10: head-to-head echo bake-off (epoll vs uring vs a hand-written epoll
+# loop for the ADR-0002 tripwire). A networked binary like bench_driver —
+# built, never a ctest; results go to bench/baselines/ manually.
+add_executable(bench_echo echo.cpp)
+target_link_libraries(bench_echo PRIVATE afx::afx)
+target_include_directories(bench_echo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(bench_echo PRIVATE -Wall -Wextra)
+
 foreach(bench_name IN ITEMS itc_pingpong channel_throughput timer_ops)
   add_executable(bench_${bench_name} ${bench_name}.cpp)
   target_link_libraries(bench_${bench_name}
@@ -17,6 +25,13 @@ foreach(bench_name IN ITEMS itc_pingpong channel_throughput timer_ops)
   target_include_directories(bench_${bench_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_options(bench_${bench_name} PRIVATE -Wall -Wextra)
 endforeach()
+
+# M6-17: minimal load driver (grows into tools/afx-load in M8-09). Not a
+# nanobench binary — it is a networked load generator, run against a live
+# server, so it is built but never registered as a ctest.
+add_executable(bench_driver driver.cpp)
+target_link_libraries(bench_driver PRIVATE afx::afx)
+target_compile_options(bench_driver PRIVATE -Wall -Wextra)
 
 # Smoke-run each benchmark under ctest so CI catches build/runtime breakage
 # without treating runner noise as a regression. RUN_SERIAL: itc_pingpong

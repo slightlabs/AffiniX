@@ -21,6 +21,7 @@ int main() {
             env.em.cancel(id);
             env.pump();
         });
+        afx::bench::collect(b);
     }
 
     // ---- fire storm: N one-shots due in the same tick ----------------------
@@ -32,6 +33,7 @@ int main() {
             for (int i = 0; i < kN; ++i) env.em.after(1ms, [](TimerCtx) {});
             env.advance(1ms);  // one expiry-stage pass fires all
         });
+        afx::bench::collect(b);
     }
 
     // ---- group cancel ------------------------------------------------------
@@ -45,5 +47,8 @@ int main() {
             env.em.cancel_group(g);
             env.pump();
         });
+        afx::bench::collect(b);
     }
+
+    afx::bench::flush_json();
 }

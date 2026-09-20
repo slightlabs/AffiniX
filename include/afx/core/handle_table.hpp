@@ -47,10 +47,11 @@ class HandleTable {
 
   public:
     HandleTable() = default;
-    // `reserve` is accepted for API compatibility but is a no-op: slots_ is a
-    // deque precisely so that growth never moves existing elements (see the
-    // comment on slots_ below).
-    explicit HandleTable(std::size_t) {}
+    // first_gen seeds the generation counter of freshly created slots.
+    // M6-13: under AFX_DEBUG_CHAOS the EM passes a random nonzero seed so no
+    // test can ossify against generations starting at 1.
+    explicit HandleTable(std::uint32_t first_gen)
+        : first_gen_(first_gen ? first_gen : 1) {}
     ~HandleTable() { clear(); }
 
     HandleTable(const HandleTable&) = delete;
@@ -65,6 +66,7 @@ class HandleTable {
         } else {
             idx = static_cast<std::uint32_t>(slots_.size());
             slots_.emplace_back();
+            slots_.back().gen = first_gen_;
         }
         Slot& s = slots_[idx];
         T* p = new (s.storage) T(std::forward<A>(a)...);
@@ -133,6 +135,7 @@ class HandleTable {
     // silently corrupt (stale addresses that look like a valid, connected
     // circular list until they are dereferenced or unlinked).
     std::deque<Slot> slots_;
+    std::uint32_t first_gen_ = 1;
     std::vector<std::uint32_t> free_;
     std::vector<std::uint32_t> deferred_;
     std::size_t live_ = 0;

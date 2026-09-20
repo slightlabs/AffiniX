@@ -48,10 +48,16 @@ class EpollBackend {
     Result<void> submit_connect(UserData u, int fd, const SockAddr& addr);
     Result<void> cancel(UserData u);
 
+    // Mark an fd as SO_TIMESTAMPING-enabled: recv completions switch to
+    // recvmsg and report hardware/software stamps (§9.4, M8-06).
+    void set_timestamping(int fd, bool on);
+
     int wait(std::span<Completion> out, Nanos timeout);
     void wake();  // thread-safe: eventfd write
 
     int wake_fd() const noexcept { return wake_fd_; }
+    // No ring to target — MSG_RING wakes are io_uring-only (M8-05).
+    int wake_ring_fd() const noexcept { return -1; }
 
   private:
     struct SendReq {
@@ -67,6 +73,7 @@ class EpollBackend {
         bool recv_armed = false;
         UserData recv_ud{};
         MutByteSpan recv_buf{};
+        bool timestamping = false;
 
         std::deque<SendReq> sendq;
 

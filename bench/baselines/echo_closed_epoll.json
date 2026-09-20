@@ -1,0 +1,67 @@
+{
+  "benchmark": "bench/echo (closed_epoll loop)",
+  "workload": "closed loop, 8 conns, 8 outstanding, 64B payload, framework epoll server",
+  "env": {
+    "cpu": "Intel Core i5-4300U @ 1.90 GHz (2C/4T, Haswell)",
+    "kernel": "Linux 7.0.0-31-generic",
+    "governor": "schedutil",
+    "numa": "1 node",
+    "compiler": "g++ 15.2.0",
+    "build": "Release (-O3), AFX_FLIGHT_RECORDER=on",
+    "class": "shared dev host \u2014 smoke-level reference, not a pinned bench machine",
+    "date": "2026-09-21"
+  },
+  "metrics": {
+    "benchmark": "echo",
+    "server_backend": "epoll",
+    "load_backend": "uring",
+    "mode": "closed",
+    "conns": 8,
+    "payload": 64,
+    "duration_s": 4.001,
+    "sends": 650176,
+    "replies": 650176,
+    "errors": 0,
+    "throughput_rps": 162494,
+    "latency_ns": {
+      "count": 490568,
+      "min": 74271,
+      "p50": 131072,
+      "p90": 262144,
+      "p99": 2097152,
+      "p999": 2097152,
+      "max": 6277562,
+      "mean": 390812
+    },
+    "buckets": [
+      {
+        "floor_ns": 65536,
+        "count": 4540
+      },
+      {
+        "floor_ns": 131072,
+        "count": 299105
+      },
+      {
+        "floor_ns": 262144,
+        "count": 148483
+      },
+      {
+        "floor_ns": 524288,
+        "count": 6024
+      },
+      {
+        "floor_ns": 1048576,
+        "count": 22704
+      },
+      {
+        "floor_ns": 2097152,
+        "count": 9520
+      },
+      {
+        "floor_ns": 4194304,
+        "count": 192
+      }
+    ]
+  }
+}
