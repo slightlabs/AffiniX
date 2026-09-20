@@ -12,6 +12,7 @@ add_executable(afx_tests
     unit/test_event_manager.cpp
     unit/test_framing.cpp
     unit/test_channel.cpp
+    unit/test_uring_backend.cpp
     model/test_rings_model.cpp
     model/test_timers_model.cpp
     fuzz/test_framer_fuzz.cpp

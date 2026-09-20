@@ -17,6 +17,9 @@
 #include "afx/backend/backend.hpp"
 #include "afx/backend/epoll.hpp"
 #include "afx/backend/sim.hpp"
+#ifdef AFX_WITH_URING
+#include "afx/backend/uring.hpp"
+#endif
 
 // L2 core
 #include "afx/core/context.hpp"

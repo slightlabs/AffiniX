@@ -7,7 +7,7 @@ project(AffiniX VERSION 0.1.0 LANGUAGES CXX)
 option(AFX_BUILD_TESTS       "Build unit/integration tests"   ON)
 option(AFX_BUILD_BENCH       "Build benchmarks"               OFF)
 option(AFX_BUILD_EXAMPLES    "Build examples"                 ON)
-option(AFX_WITH_URING        "Build the io_uring backend"     OFF)
+option(AFX_WITH_URING        "Build the io_uring backend"     ON)
 option(AFX_WITH_TIMESTAMPING "SO_TIMESTAMPING support"        OFF)
 option(AFX_FLIGHT_RECORDER   "Always-on per-EM flight recorder" ON)
 option(AFX_DEBUG_CHAOS       "Randomise unspecified order in debug builds" OFF)
@@ -40,6 +40,13 @@ target_include_directories(afx PUBLIC
   $<INSTALL_INTERFACE:include>)
 target_compile_options(afx PUBLIC -Wall -Wextra -Wpedantic)
 target_link_libraries(afx PUBLIC pthread)
+
+if(AFX_WITH_URING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Raw io_uring syscall ABI — no liburing dependency (§23). Runtime fallback
+  # to epoll happens in AutoBackend when ring setup or probing fails (§9.5).
+  target_sources(afx PRIVATE src/backend/uring.cpp)
+  target_compile_definitions(afx PUBLIC AFX_WITH_URING=1)
+endif()
 
 target_compile_definitions(afx PUBLIC
   $<$<BOOL:${AFX_FLIGHT_RECORDER}>:AFX_FLIGHT_RECORDER=1>
