@@ -1027,17 +1027,17 @@ enum class SendResult { Sent, Queued, Backpressured, Dropped, Closed };
 Opt-in, built strictly on top of the callback core, and never required.
 
 ```cpp
-afx::Task<void> session(ConnRef c) {
+afx::CoroTask<void> session(ConnRef c) {
     while (auto msg = co_await c.recv()) {          // resumes on the same EM
         co_await c.send(build_reply(*msg));
     }
     co_return;
 }
 
-afx::Task<void> poller(EventManager& em) {
+afx::CoroTask<void> poller(EventManager& em) {
     for (;;) {
         co_await em.sleep(1s);
-        auto [a, b] = co_await afx::when_all(fetch_a(), fetch_b());
+        auto [a, b] = co_await afx::coro::when_all(fetch_a(), fetch_b());
         publish(a, b);
     }
 }
@@ -1046,7 +1046,9 @@ afx::Task<void> poller(EventManager& em) {
 Guarantees and implementation notes:
 
 - **Every awaiter resumes on the EM it was suspended on.** No exceptions.
-- `Task<T>` is lazy, uses symmetric transfer at `final_suspend` (no stack
+- The task type is `afx::CoroTask<T>` (`afx::Task` was already taken by the
+  mailbox work-item closure — see §25 of the implementation plan). It is
+  lazy, uses symmetric transfer at `final_suspend` (no stack
   growth in a loop), and is `[[nodiscard]]`.
 - Frames are allocated from the EM's arena via
   `operator new(std::size_t, EventManager&)`, so a coroutine-per-connection

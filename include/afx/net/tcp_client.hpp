@@ -92,6 +92,7 @@ class TcpClient {
     void on_state_change(StateFn&& f) { state_fn_ = std::move(f); }
     ClientState state() const noexcept { return state_; }
     Connection<P, EM>* conn() { return conn_; }
+    EM& em() const noexcept { return *em_; }
 
     // ---- §20 drain-sequence hooks ----------------------------------------
     static void hooks_notify(void* p) {

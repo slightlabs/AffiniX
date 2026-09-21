@@ -144,6 +144,36 @@ void raw_epoll_server(std::uint16_t port, std::atomic<bool>& stop) {
 }
 
 // ---- framework echo server -------------------------------------------------
+// bench_echo_coro compiles this same file with AFX_ECHO_CORO_SERVER: the
+// load side and CLI are identical, only the server session shape changes
+// (callback batch handler → one coroutine per connection).
+#ifdef AFX_ECHO_CORO_SERVER
+void framework_server(EventManager& em, std::uint16_t port) {
+    ServerConfig cfg;
+    cfg.bind = SockAddr::any(port);
+    cfg.reuse_port = true;
+    auto srv = em.make_coro_server<EchoProto>(
+        cfg, [](ConnRef<EchoProto, EventManager> c) -> CoroTask<void> {
+            // Frame buffer lives in the coroutine frame: valid across the
+            // send suspension, and reused per message (recv batches point
+            // into the conn's read buffer — copy out before the next recv).
+            std::vector<std::byte> buf;
+            while (auto batch = co_await c.recv()) {
+                for (auto& m : *batch) {
+                    buf.resize(sizeof(EchoHeader) + m.body.size());
+                    std::memcpy(buf.data(), &m.header, sizeof(EchoHeader));
+                    std::memcpy(buf.data() + sizeof(EchoHeader),
+                                m.body.data(), m.body.size());
+                    if (co_await c.send(ByteSpan(buf.data(), buf.size())) ==
+                        SendResult::Closed)
+                        co_return;
+                }
+            }
+        });
+    if (!srv)
+        std::fprintf(stderr, "bench_echo: bind failed\n");
+}
+#else
 void framework_server(EventManager& em, std::uint16_t port) {
     Handlers<EchoProto> h;
     h.on_messages = [&](ConnId id, std::span<const EchoMsg> batch) {
@@ -165,6 +195,7 @@ void framework_server(EventManager& em, std::uint16_t port) {
     if (!srv)
         std::fprintf(stderr, "bench_echo: bind failed\n");
 }
+#endif  // AFX_ECHO_CORO_SERVER
 
 // ---- load side (afx-load logic, shared shape) ------------------------------
 struct PerConn {

@@ -645,3 +645,9 @@ Recorded here rather than silently applied, per §2, agreement 3.
    header does.
 3. **The license is an open decision** (M0-08), tracked here because it blocks
    external contribution but not implementation.
+4. **The coroutine task type is spelled `afx::CoroTask<T>`, not `afx::Task<T>`**
+   (M9-02). `afx::Task` was already the posted-work closure
+   (`InlineFn<void(), 48>` in `itc/mailbox.hpp`) by the time the coroutine
+   layer landed, and renaming it would have churned the entire core for a
+   name. DESIGN.md §17's examples read `CoroTask` now; ADR-0005 records the
+   outcome.

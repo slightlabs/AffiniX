@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -27,6 +28,9 @@
 #include "afx/core/handle_table.hpp"
 #include "afx/core/stats.hpp"
 #include "afx/core/timer_wheel.hpp"
+#include "afx/coro/frame_cache.hpp"
+#include "afx/coro/ops.hpp"
+#include "afx/coro/task.hpp"
 #include "afx/itc/mailbox.hpp"
 #include "afx/sys/annotations.hpp"
 #include "afx/sys/clock.hpp"
@@ -193,6 +197,21 @@ class BasicEventManager {
                       ? numa::current_node()
                       : -1;
         arena_ = Arena(config_.memory.arena_bytes, mo);
+        frame_cache_.bind(&arena_);
+
+        // M9: type-erased coroutine hooks (coro/task.hpp). The promise talks
+        // to the EM only through this table so coro code never names the
+        // BasicEventManager template.
+        coro_ops_.em = this;
+        coro_ops_.frame_alloc = &coro_alloc_thunk;
+        coro_ops_.frame_free = &coro_free_thunk;
+        coro_ops_.root_link = &coro_link_thunk;
+        coro_ops_.root_unlink = &coro_unlink_thunk;
+        coro_ops_.ctx_push = &coro_push_thunk;
+        coro_ops_.ctx_pop = &coro_pop_thunk;
+        coro_ops_.timer_after = &coro_after_thunk;
+        coro_ops_.timer_cancel = &coro_cancel_thunk;
+        coro_ops_.home_mb = mb_;
 
         // M7-08: expose this EM's flight recorder to the crash-dump handler.
         register_recorder(&recorder_);
@@ -201,6 +220,18 @@ class BasicEventManager {
     ~BasicEventManager() {
         unregister_recorder(&recorder_);
         mb_->dead.store(true, std::memory_order_release);
+        // M9: cancel coroutine roots first — their awaiters resume with a
+        // Cancelled result and unwind while conns/timers are still alive.
+        // A root that refuses cancellation (non-cancellable custom awaiter)
+        // is destroyed outright; parked frames never outlive the arena.
+        while (coro_roots_) {
+            coro::PromiseBase* p = coro_roots_;
+            if (p->cancel_fn) p->request_stop();
+            if (coro_roots_ == p) {
+                coro_unlink_thunk(this, p);
+                if (p->destroy_frame) p->destroy_frame(p);
+            }
+        }
         // Defined close order (§20): owned objects (servers/clients) tear
         // down their connections, then sinks, then timers.
         for (auto& o : owned_) o.del(o.p);
@@ -303,6 +334,36 @@ class BasicEventManager {
     Deadline deadline() const noexcept { return ctx_.deadline; }
     [[nodiscard]] ContextScope with_context(Context c) {
         return ContextScope(&ctx_, std::move(c));
+    }
+
+    // ---- coroutines (M9; ADR-0005 opt-in layer)
+    // --------------------------------------------------
+    // spawn(): start `t` as a root task on this EM. The task self-destroys
+    // at completion; EM teardown cancels still-parked roots. `ctx` merges
+    // with the ambient Context: trace inherits, deadlines only tighten.
+    // Cancellation: use TaskScope (request_stop + join) or StopToken in ctx.
+    void spawn(coro::Task<void> t, Context ctx = {}) {
+        auto& p = t.promise();
+        p.engine = &coro_ops_;
+        p.is_root = true;
+        const Context& amb = detail::ambient_context();
+        p.ctx = ctx;
+        if (!ctx.trace.valid()) p.ctx.trace = amb.trace;
+        p.ctx.deadline = amb.deadline.earliest_of(ctx.deadline);
+        if (!ctx.stop) p.ctx.stop = amb.stop;
+        coro_link_thunk(this, &p);
+        t.start();
+        (void)t.release();  // root ownership lives in the coro_roots_ list
+    }
+
+    // `co_await em.sleep(d)` — timer-wheel resolution, cancellable.
+    coro::SleepOp sleep(Duration d) noexcept { return {&coro_ops_, d}; }
+
+    coro::EngineOps* coro_ops() noexcept { return &coro_ops_; }
+    // Frames that fell back to the heap (arena exhausted/oversized) —
+    // spike 0002's visibility contract.
+    std::size_t coro_heap_frames() const noexcept {
+        return frame_cache_.heap_fallbacks();
     }
 
     // ---- timers
@@ -529,6 +590,11 @@ class BasicEventManager {
     template <class P, class Handlers>
     Result<TcpClient<P, BasicEventManager>*> make_client(ClientConfig,
                                                          Handlers&&);
+    // M9: a server whose per-connection session is a coroutine —
+    // `session(ConnRef<P,EM>) -> CoroTask<void>`, spawned at on_open.
+    template <class P, class SessionFactory>
+    Result<TcpServer<P, BasicEventManager>*> make_coro_server(ServerConfig,
+                                                              SessionFactory&&);
 
   private:
     // Drain step (§20 stage 3): poll owned objects until their write queues
@@ -927,6 +993,64 @@ class BasicEventManager {
     std::thread::id owner_;
     TimePoint spin_until_{};  // epoch default: blocks until first work
     bool blocked_ = false;
+
+    // ---- coroutine layer (M9)
+    // ------------------------------------------------------------------
+    coro::EngineOps coro_ops_{};
+    coro::FrameCache frame_cache_{};
+    coro::PromiseBase* coro_roots_ = nullptr;
+
+    static void* coro_alloc_thunk(void* e, std::size_t n) noexcept {
+        return static_cast<BasicEventManager*>(e)->frame_cache_.alloc(n);
+    }
+    static void coro_free_thunk(void* e, void* p) noexcept {
+        static_cast<BasicEventManager*>(e)->frame_cache_.free(p);
+    }
+    static void coro_link_thunk(void* e, void* pr) noexcept {
+        auto& em = *static_cast<BasicEventManager*>(e);
+        auto* p = static_cast<coro::PromiseBase*>(pr);
+        p->coro_prev = nullptr;
+        p->coro_next = em.coro_roots_;
+        if (em.coro_roots_) em.coro_roots_->coro_prev = p;
+        em.coro_roots_ = p;
+        ++em.stats_.coro_spawned;
+    }
+    static void coro_unlink_thunk(void* e, void* pr) noexcept {
+        auto& em = *static_cast<BasicEventManager*>(e);
+        auto* p = static_cast<coro::PromiseBase*>(pr);
+        if (p->coro_prev)
+            p->coro_prev->coro_next = p->coro_next;
+        else
+            em.coro_roots_ = p->coro_next;
+        if (p->coro_next) p->coro_next->coro_prev = p->coro_prev;
+        p->coro_prev = p->coro_next = nullptr;
+        ++em.stats_.coro_completed;
+    }
+    // Context push/pop mirror ContextScope but stash the saved slot pair in
+    // the promise so resume/suspend nesting stays balanced without a scope
+    // object surviving across suspends.
+    static void coro_push_thunk(void* e, coro::PromiseBase* p) noexcept {
+        auto& em = *static_cast<BasicEventManager*>(e);
+        p->saved_ctx_ = em.ctx_;
+        p->saved_tls_ = detail::tls_ambient;
+        em.ctx_ = p->ctx;
+        detail::tls_ambient = &em.ctx_;
+    }
+    static void coro_pop_thunk(void* e, coro::PromiseBase* p) noexcept {
+        auto& em = *static_cast<BasicEventManager*>(e);
+        em.ctx_ = p->saved_ctx_;
+        detail::tls_ambient = p->saved_tls_;
+    }
+    static void* coro_after_thunk(void* e, Nanos d, void* arg,
+                                  void (*fire)(void*)) {
+        auto& em = *static_cast<BasicEventManager*>(e);
+        TimerId id = em.after(d, [arg, fire](TimerCtx) { fire(arg); });
+        return std::bit_cast<void*>(id);
+    }
+    static bool coro_cancel_thunk(void* e, void* tok) noexcept {
+        return static_cast<BasicEventManager*>(e)->cancel(
+            std::bit_cast<TimerId>(tok));
+    }
 
 #ifdef AFX_DEBUG_CHAOS
     // M6-13: debug builds randomise order the design leaves unspecified

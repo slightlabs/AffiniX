@@ -47,5 +47,12 @@
 #include "afx/net/tcp_client.hpp"
 #include "afx/net/tcp_server.hpp"
 
+// L5 coroutines (opt-in layer — ADR-0005)
+#include "afx/coro/combine.hpp"
+#include "afx/coro/conn.hpp"
+#include "afx/coro/ops.hpp"
+#include "afx/coro/scope.hpp"
+#include "afx/coro/task.hpp"
+
 // runtime
 #include "afx/runtime.hpp"

@@ -58,3 +58,22 @@ Revisit if the coroutine layer cannot be kept within ~10 % of the callback form
 on `bench/echo` (in which case document it as a convenience layer rather than a
 recommended default), or if arena allocation of frames proves unsound in
 practice (DESIGN.md open question 5).
+
+## Outcome (M9, 2026-10)
+
+- **Spelling:** the task type is `afx::CoroTask<T>` — `afx::Task` was already
+  the mailbox work-item closure (`InlineFn<void(), 48>`) before this layer
+  existed. DESIGN.md §17 and IMPLEMENTATION_PLAN §25 record the deviation.
+- **Tripwire measured:** `bench_echo_coro` vs `bench_echo` share one harness
+  (the same file compiled twice — only the session shape differs). On the dev
+  host, Release build, closed loop, 8 conns: coroutine echo measured *level
+  with* callback echo on both backends (epoll 91.1k vs 90.9k rps; uring
+  127.4k vs 126.0k rps — within run-to-run noise). The layer costs nothing
+  measurable on this workload; baselines committed under
+  `bench/baselines/echo_coro_*.json`.
+- **Frame allocation:** sound via the size-bucketed `FrameCache` over the EM
+  arena (spike `docs/spikes/0002-coro-arena.md`); heap fallback is counted
+  (`stats().coro_heap_frames`), never silent.
+- **Core impact:** one narrow seam — `Connection` gained a `CoroState` block
+  and `enable_coro()`, plus `EngineOps` thunks on the EM. No behavioural
+  change to callback mode.

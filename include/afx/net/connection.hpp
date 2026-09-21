@@ -6,11 +6,13 @@
 
 #include <sys/socket.h>
 #include <unistd.h>
+#include <coroutine>
 #include <cstring>
 #include <vector>
 
 #include "afx/core/event_manager.hpp"
 #include "afx/core/io_buffer.hpp"
+#include "afx/coro/task.hpp"
 #include "afx/net/protocol.hpp"
 #include "afx/net/socket.hpp"
 
@@ -33,6 +35,7 @@ enum class CloseReason : std::uint8_t {
     Error,          // socket error
     ConnectFailed,
     Shutdown,  // EM/runtime teardown
+    HeldOverflow,  // coroutine session stopped consuming (held cap hit)
 };
 
 // on_messages is required; everything else optional (empty InlineFn).
@@ -125,7 +128,7 @@ class Connection {
         if (params_.timestamping) em_->backend_set_timestamping(fd_, true);
         if (handlers_->on_open) handlers_->on_open(id_, peer_);
         arm_idle_timer();
-        arm_recv();
+        rearm_recv();
     }
 
     // ---- sending
@@ -219,6 +222,56 @@ class Connection {
         }
     }
 
+    // ---- coroutine session mode (M9-04, coro/conn.hpp)
+    // --------------------------------------------------
+    // enable_coro() hands the connection's pacing to a session coroutine:
+    // a recv completion delivers one batch to the parked waiter and the
+    // socket read is NOT re-armed — the next recv() drives the next read.
+    // Batches parsed while no waiter is parked (a multi-batch read) stash
+    // into `held` and are handed to the next recv() without a socket read;
+    // held is bounded and an overflow closes the connection.
+    void enable_coro() noexcept { coro_.on = true; }
+    bool coro_mode() const noexcept { return coro_.on; }
+
+    // Ready check for RecvOp::await_ready — drains the held stash first.
+    bool coro_recv_ready(std::span<const Message>* out) noexcept {
+        if (coro_.held.empty()) return false;
+        coro_.delivered = std::move(coro_.held);
+        coro_.held.clear();
+        *out = std::span<const Message>(coro_.delivered);
+        return true;
+    }
+    // Park the coroutine until the next batch. Arms the read unless one is
+    // already in flight (a re-park inside the current parse loop).
+    void coro_await_recv(std::coroutine_handle<> h, coro::PromiseBase* p,
+                         Result<std::span<const Message>>* out) {
+        coro_.recv_h = h;
+        coro_.recv_p = p;
+        coro_.recv_out = out;
+        if (!coro_.armed) {
+            coro_.armed = true;
+            arm_recv();
+        }
+    }
+    void coro_unawait_recv() noexcept {
+        coro_.recv_h = {};
+        coro_.recv_p = nullptr;
+        coro_.recv_out = nullptr;
+    }
+    // SendOp: park until the write side drains below the low watermark.
+    void coro_await_send(std::coroutine_handle<> h, coro::PromiseBase* p,
+                         ByteSpan bytes, SendResult* out) {
+        coro_.send_h = h;
+        coro_.send_p = p;
+        coro_.send_bytes = bytes;
+        coro_.send_out = out;
+    }
+    void coro_unawait_send() noexcept {
+        coro_.send_h = {};
+        coro_.send_p = nullptr;
+        coro_.send_out = nullptr;
+    }
+
     // Outbound connect finished: become Established or die (§13.1).
     void on_connect_result(const Completion& c) {
         if (state_ != ConnState::Connecting) return;
@@ -242,10 +295,11 @@ class Connection {
     }
 
     void on_recv(const Completion& c) {
+        if (coro_.on) coro_.armed = false;  // the in-flight read completed
         if (state_ != ConnState::Established) return;
         if (c.result < 0) {
             if (c.result == -EAGAIN || c.result == -ECANCELED) {
-                arm_recv();
+                rearm_recv();
                 return;
             }
             close(CloseReason::Error);
@@ -288,13 +342,43 @@ class Connection {
             }
         }
         if (!batch_.empty()) dispatch_batch();
-        if (state_ == ConnState::Established) arm_recv();
+        // Coroutine sessions pace reads via recv(); callback mode re-arms.
+        if (state_ == ConnState::Established && !coro_.on) arm_recv();
     }
 
     void dispatch_batch() {
         ++em_->stats().msgs_in;
+        if (coro_.on) {
+            if (coro_.recv_h) {
+                auto h = coro_.recv_h;
+                auto* p = coro_.recv_p;
+                auto* out = coro_.recv_out;
+                coro_unawait_recv();
+                *out = std::span<const Message>(batch_);
+                p->resume_under_ctx(h);  // session may re-park mid-parse
+            } else if (coro_.held.size() + batch_.size() <= kCoroHeldCap) {
+                coro_.held.insert(coro_.held.end(), batch_.begin(),
+                                  batch_.end());
+            } else {
+                close(CloseReason::HeldOverflow);
+            }
+            return;
+        }
         if (handlers_->on_messages)
             handlers_->on_messages(id_, std::span<const Message>(batch_));
+    }
+
+    // Arm a read honoring coroutine pacing: in coro mode this is the only
+    // submit path and it is deduplicated by coro_.armed.
+    void rearm_recv() {
+        if (coro_.on) {
+            if (!coro_.armed) {
+                coro_.armed = true;
+                arm_recv();
+            }
+        } else {
+            arm_recv();
+        }
     }
 
     // ---- send path
@@ -327,10 +411,14 @@ class Connection {
             backpressured_ = false;
             if (read_paused_) {
                 read_paused_ = false;
-                arm_recv();
+                rearm_recv();
             }
-            if (handlers_->on_writable && state_ == ConnState::Established)
+            if (coro_.on) {
+                coro_writable();
+            } else if (handlers_->on_writable &&
+                       state_ == ConnState::Established) {
                 handlers_->on_writable(id_);
+            }
         }
         if (!write_buf_.empty()) em_->note_write_pending(sink_);
     }
@@ -395,6 +483,21 @@ class Connection {
         return SendResult::Dropped;
     }
 
+    // Coroutine-mode writable edge: retry the parked send once the write
+    // side drains. If the retry still hits the watermark the waiter stays
+    // parked for the next edge.
+    void coro_writable() {
+        if (!coro_.send_h) return;
+        SendResult r = send(coro_.send_bytes);
+        if (r == SendResult::Backpressured) return;  // still full; re-park
+        auto h = coro_.send_h;
+        auto* p = coro_.send_p;
+        auto* out = coro_.send_out;
+        coro_unawait_send();
+        *out = r;
+        p->resume_under_ctx(h);
+    }
+
     void pause_reads() {
         read_paused_ = true;
         em_->backend_cancel(sink_, OpKind::Recv);
@@ -444,6 +547,24 @@ class Connection {
         sink_ = {};
         em_->release_sink(s);
         state_ = ConnState::Closed;
+        // Wake coroutine waiters after the state flips to Closed — the
+        // resumed session observes the closed conn via ConnRef::valid().
+        if (coro_.recv_h) {
+            auto h = coro_.recv_h;
+            auto* p = coro_.recv_p;
+            auto* out = coro_.recv_out;
+            coro_unawait_recv();
+            *out = make_error(ErrorCategory::Net, Err::Closed);
+            p->resume_under_ctx(h);
+        }
+        if (coro_.send_h) {
+            auto h = coro_.send_h;
+            auto* p = coro_.send_p;
+            auto* out = coro_.send_out;
+            coro_unawait_send();
+            *out = SendResult::Closed;
+            p->resume_under_ctx(h);
+        }
         // Notify the owner via defer so the connection's memory is never
         // freed out from under the callback that initiated the close. That
         // guarantee only matters while the loop is actively iterating: once
@@ -461,6 +582,24 @@ class Connection {
         else
             notify(owner, id, r);
     }
+
+    // Coroutine session state (M9-04). Zero-cost in callback mode except the
+    // two vectors, which stay empty.
+    static constexpr std::size_t kCoroHeldCap = 256;
+    struct CoroState {
+        std::coroutine_handle<> recv_h{};
+        coro::PromiseBase* recv_p = nullptr;
+        Result<std::span<const Message>>* recv_out = nullptr;
+        std::coroutine_handle<> send_h{};
+        coro::PromiseBase* send_p = nullptr;
+        SendResult* send_out = nullptr;
+        ByteSpan send_bytes{};
+        std::vector<Message> held;       // unpaced-batch stash (bounded)
+        std::vector<Message> delivered;  // stable storage for held returns
+        bool armed = false;              // a recv submit is in flight
+        bool on = false;                 // coroutine session owns this conn
+    };
+    CoroState coro_{};
 
     EM* em_;
     int fd_ = -1;

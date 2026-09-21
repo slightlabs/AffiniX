@@ -18,6 +18,13 @@ target_link_libraries(bench_echo PRIVATE afx::afx)
 target_include_directories(bench_echo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(bench_echo PRIVATE -Wall -Wextra)
 
+# M9-08: same harness, coroutine session — the ADR-0005 layering-cost
+# comparison against bench_echo.
+add_executable(bench_echo_coro echo_coro.cpp)
+target_link_libraries(bench_echo_coro PRIVATE afx::afx)
+target_include_directories(bench_echo_coro PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(bench_echo_coro PRIVATE -Wall -Wextra)
+
 foreach(bench_name IN ITEMS itc_pingpong channel_throughput timer_ops)
   add_executable(bench_${bench_name} ${bench_name}.cpp)
   target_link_libraries(bench_${bench_name}

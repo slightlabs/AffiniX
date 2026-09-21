@@ -220,4 +220,24 @@ BasicEventManager<C, B>::make_server(ServerConfig cfg, H&& handlers) {
     return s;
 }
 
+// EventManager::make_coro_server (M9): the session factory is invoked per
+// accepted connection as `fn(ConnRef<P,EM>) -> CoroTask<void>`; the returned
+// task is spawned as an EM root. The factory is boxed once per server so any
+// callable size works.
+template <class C, class B>
+template <class P, class F>
+Result<TcpServer<P, BasicEventManager<C, B>>*>
+BasicEventManager<C, B>::make_coro_server(ServerConfig cfg, F&& session) {
+    using EM_t = BasicEventManager;
+    auto factory = std::make_shared<std::decay_t<F>>(std::forward<F>(session));
+    Handlers<P> h{};
+    h.on_open = [this, factory](ConnId id, Peer) mutable {
+        auto* c = Connection<P, EM_t>::resolve(*this, id);
+        if (!c) return;
+        c->enable_coro();
+        spawn((*factory)(ConnRef<P, EM_t>(*this, id)));
+    };
+    return make_server<P>(std::move(cfg), std::move(h));
+}
+
 }  // namespace afx

@@ -50,6 +50,12 @@ struct Stats {
     std::uint64_t callback_errors = 0;
     std::uint64_t internal_errors = 0;
 
+    // coroutines (M9): spawned/completed roots; heap_frames is the
+    // arena-fallback counter (spike 0002's visibility rule).
+    std::uint64_t coro_spawned = 0;
+    std::uint64_t coro_completed = 0;
+    std::uint64_t coro_heap_frames = 0;
+
     // The derived metric to watch (§21): fraction of iterations that found no
     // work. Caller computes it; stored here as the numerator/denominator pair.
     double idle_ratio() const noexcept {
