@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 #include "afx/sys/result.hpp"
@@ -42,7 +43,12 @@ class SockAddr {
 
     std::string to_string() const;
 
-    bool operator==(const SockAddr&) const = default;
+    // memcmp, not defaulted: sockaddr_storage has no operator==, so a
+    // defaulted one would be defined-as-deleted. Every factory path zero-
+    // initializes ss_ first, so the whole storage compares deterministically.
+    bool operator==(const SockAddr& o) const noexcept {
+        return std::memcmp(&ss_, &o.ss_, sizeof(ss_)) == 0;
+    }
 
   private:
     sockaddr_storage ss_{};

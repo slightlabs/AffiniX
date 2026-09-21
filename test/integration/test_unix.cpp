@@ -51,6 +51,17 @@ TEST_CASE("unix: SockAddr::unix_domain makes an AF_UNIX address") {
     // Too long for sun_path.
     std::string long_path(200, 'x');
     CHECK_FALSE(SockAddr::unix_domain(long_path).has_value());
+
+    // operator== compares the whole zero-initialised storage.
+    auto b = SockAddr::unix_domain("/tmp/afx-unit.sock");
+    REQUIRE(b.has_value());
+    CHECK(*a == *b);
+    CHECK(*a != SockAddr::loopback(8080));
+    CHECK(SockAddr::loopback(8080) == SockAddr::loopback(8080));
+    CHECK(SockAddr::loopback(8080) != SockAddr::loopback(8081));
+    auto v6 = SockAddr::parse("::1", 8080);
+    REQUIRE(v6.has_value());
+    CHECK(*v6 != SockAddr::loopback(8080));  // same port, different family
 }
 
 AFX_BACKEND_TEST_CASE("unix: echo over a filesystem path", EM) {
