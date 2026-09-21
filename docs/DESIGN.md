@@ -1,6 +1,8 @@
 # AffiniX — Design Document
 
-**Status:** draft (pre-implementation)
+**Status:** implemented (M0–M12). For user-facing documentation with
+examples see the [guide](guide/getting-started.md); this document is the
+design contract behind it.
 **Target:** C++20, Linux first (epoll + io_uring), macOS/BSD second (kqueue)
 **Namespace:** `afx`
 

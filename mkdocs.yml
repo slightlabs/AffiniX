@@ -18,6 +18,24 @@ markdown_extensions:
 
 nav:
   - Overview: index.md
+  - Guide:
+      - guide/getting-started.md
+      - guide/event-manager.md
+      - guide/runtime.md
+      - guide/timers.md
+      - guide/protocols.md
+      - guide/tcp.md
+      - guide/udp.md
+      - guide/dns.md
+      - guide/itc.md
+      - guide/coroutines.md
+      - guide/backends.md
+      - guide/memory.md
+      - guide/errors.md
+      - guide/observability.md
+      - guide/simulation.md
+      - guide/testing.md
+      - guide/benchmarking.md
   - Design: DESIGN.md
   - Implementation Plan: IMPLEMENTATION_PLAN.md
   - Decisions (ADRs):
@@ -33,3 +51,4 @@ nav:
       - adr/0009-compile-time-affinity-annotations.md
   - Spikes:
       - spikes/2026-09-20-uring.md
+      - spikes/0002-coro-arena.md

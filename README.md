@@ -72,6 +72,12 @@ Runnable programs under `examples/` (built into `build/examples/`):
 
 ## Documentation
 
+- [docs/index.md](docs/index.md) — the rendered docs site
+  (`mkdocs serve`), including the **guide** under
+  [docs/guide/](docs/guide/getting-started.md): per-feature pages with
+  examples for the event manager, runtime, timers, protocols, TCP, UDP,
+  DNS, ITC, coroutines, backends, memory, errors, observability,
+  simulation, testing and benchmarking
 - [docs/DESIGN.md](docs/DESIGN.md) — the full design: threading model,
   `EventManager`, backends, timers, ITC, framing, backpressure, affinity,
   observability, testing, roadmap

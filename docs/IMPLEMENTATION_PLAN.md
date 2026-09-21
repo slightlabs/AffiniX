@@ -1,7 +1,8 @@
 # AffiniX — Implementation Plan
 
-**Status:** draft (pre-implementation)
-**Companion to:** [DESIGN.md](DESIGN.md) and [adr/](adr/README.md)
+**Status:** M0–M12 landed; M13 layers are post-v1
+**Companion to:** [DESIGN.md](DESIGN.md), [adr/](adr/README.md), and the
+user-facing [guide](guide/getting-started.md)
 
 This document turns the design into ordered, verifiable work. DESIGN.md says
 *what* the framework is; this says *in what order it gets built, and how we
@@ -17,20 +18,20 @@ know each step is done*.
 4. [Test taxonomy](#4-test-taxonomy)
 5. [CI pipeline, built up in stages](#5-ci-pipeline-built-up-in-stages)
 6. [Benchmark methodology](#6-benchmark-methodology)
-7. [Milestone 0 — project setup](#milestone-0--project-setup)
-8. [Milestone 1 — foundations](#milestone-1--foundations)
-9. [Milestone 2 — loop skeleton and epoll backend](#milestone-2--loop-skeleton-and-epoll-backend)
-10. [Milestone 3 — inter-thread communication](#milestone-3--inter-thread-communication)
-11. [Milestone 4 — timers](#milestone-4--timers)
-12. [Milestone 5 — runtime and placement](#milestone-5--runtime-and-placement)
-13. [Milestone 6 — networking](#milestone-6--networking)
-14. [Milestone 7 — robustness and observability](#milestone-7--robustness-and-observability)
-15. [Milestone 8 — io_uring, timestamping, load generator](#milestone-8--io_uring-timestamping-load-generator)
-16. [Milestone 9 — coroutine layer](#milestone-9--coroutine-layer)
-17. [Milestone 10 — deterministic simulation](#milestone-10--deterministic-simulation)
-18. [Milestone 11 — breadth](#milestone-11--breadth)
-19. [Milestone 12 — operability](#milestone-12--operability)
-20. [Milestone 13 — post-v1 optional layers](#milestone-13--post-v1-optional-layers)
+7. [Milestone 0 — project setup](#milestone-0-project-setup)
+8. [Milestone 1 — foundations](#milestone-1-foundations)
+9. [Milestone 2 — loop skeleton and epoll backend](#milestone-2-loop-skeleton-and-epoll-backend)
+10. [Milestone 3 — inter-thread communication](#milestone-3-inter-thread-communication)
+11. [Milestone 4 — timers](#milestone-4-timers)
+12. [Milestone 5 — runtime and placement](#milestone-5-runtime-and-placement)
+13. [Milestone 6 — networking](#milestone-6-networking)
+14. [Milestone 7 — robustness and observability](#milestone-7-robustness-and-observability)
+15. [Milestone 8 — io_uring, timestamping, load generator](#milestone-8-io_uring-timestamping-load-generator)
+16. [Milestone 9 — coroutine layer](#milestone-9-coroutine-layer)
+17. [Milestone 10 — deterministic simulation](#milestone-10-deterministic-simulation)
+18. [Milestone 11 — breadth](#milestone-11-breadth)
+19. [Milestone 12 — operability](#milestone-12-operability)
+20. [Milestone 13 — post-v1 optional layers](#milestone-13-post-v1-optional-layers)
 21. [Spike schedule](#21-spike-schedule)
 22. [Open-question resolution schedule](#22-open-question-resolution-schedule)
 23. [Risk register](#23-risk-register)
