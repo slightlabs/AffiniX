@@ -82,8 +82,7 @@ class WhenAllOp {
     Result<Out> await_resume() {
         if (!parent_) return Out{};  // N == 0: never suspended
         parent_->clear_cancel();
-        if (parent_->stop_requested())
-            return cancelled_err();
+        if (parent_->stop_requested()) return cancelled_err();
         return collect(std::index_sequence_for<Ts...>{});
     }
 
@@ -127,8 +126,8 @@ class WhenAllOp {
     }
 
     void cancel_children() noexcept {
-        std::apply(
-            [](auto&... t) { (t.promise().request_stop(), ...); }, tasks_);
+        std::apply([](auto&... t) { (t.promise().request_stop(), ...); },
+                   tasks_);
     }
 
     template <std::size_t... Is>
@@ -154,8 +153,9 @@ auto when_all(Task<Ts>... ts) {
     return WhenAllOp<Ts...>(std::move(ts)...);
 }
 
-// ---- when_any ----------------------------------------------------------------
-// First child to finish wins; the rest get request_stop() and unwind inline.
+// ---- when_any
+// ---------------------------------------------------------------- First child
+// to finish wins; the rest get request_stop() and unwind inline.
 template <class... Ts>
 class WhenAnyOp {
     static constexpr std::size_t N = sizeof...(Ts);
@@ -184,8 +184,7 @@ class WhenAnyOp {
 
     Result<Out> await_resume() {
         parent_->clear_cancel();
-        if (parent_->stop_requested() && !won_)
-            return cancelled_err();
+        if (parent_->stop_requested() && !won_) return cancelled_err();
         return winner_result(std::index_sequence_for<Ts...>{});
     }
 
@@ -235,8 +234,8 @@ class WhenAnyOp {
             tasks_);
     }
     void cancel_children() noexcept {
-        std::apply(
-            [](auto&... t) { (t.promise().request_stop(), ...); }, tasks_);
+        std::apply([](auto&... t) { (t.promise().request_stop(), ...); },
+                   tasks_);
     }
 
     template <std::size_t... Is>
@@ -255,8 +254,7 @@ class WhenAnyOp {
                         out.second.template emplace<Is>(std::monostate{});
                     } else {
                         out.second.template emplace<Is>(
-                            std::move(std::get<Is>(tasks_).promise())
-                                .take());
+                            std::move(std::get<Is>(tasks_).promise()).take());
                     }
                     out.first = Is;
                 } catch (...) {
@@ -287,10 +285,11 @@ auto when_any(Task<Ts>... ts) {
     return WhenAnyOp<Ts...>(std::move(ts)...);
 }
 
-// ---- with_timeout --------------------------------------------------------------
-// `co_await with_timeout(d, task)` → Result<T>. On expiry the child gets
-// request_stop() (its in-flight awaiter unwinds with Cancelled) and the
-// parent resumes with Err::Expired.
+// ---- with_timeout
+// -------------------------------------------------------------- `co_await
+// with_timeout(d, task)` → Result<T>. On expiry the child gets request_stop()
+// (its in-flight awaiter unwinds with Cancelled) and the parent resumes with
+// Err::Expired.
 template <class T>
 class WithTimeoutOp {
   public:
@@ -335,7 +334,8 @@ class WithTimeoutOp {
     Result<T> await_resume() {
         parent_->clear_cancel();
         if (err_) return err_;
-        if (timed_out_) return make_error(ErrorCategory::Cancelled, Err::Expired);
+        if (timed_out_)
+            return make_error(ErrorCategory::Cancelled, Err::Expired);
         if constexpr (std::is_void_v<T>) {
             t_.promise().take();
             return {};

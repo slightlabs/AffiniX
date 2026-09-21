@@ -107,7 +107,7 @@ TEST_CASE("numa::alloc binds to the current node when NUMA is available") {
         MESSAGE("NUMA unavailable on this host — skipped");
         return;
     }
-    auto r = numa::alloc(1u << 20,
-                         numa::AllocOpts{.node = node, .prefault = true});
+    auto r =
+        numa::alloc(1u << 20, numa::AllocOpts{.node = node, .prefault = true});
     REQUIRE(r.has_value());
 }

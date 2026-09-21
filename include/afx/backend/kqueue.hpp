@@ -101,16 +101,17 @@ class KqueueBackend {
 
     void on_readable(int fd, FdState& s, std::span<Completion>& out, int& n);
     void on_writable(int fd, FdState& s, std::span<Completion>& out, int& n);
-    void on_errorish(int fd, FdState& s, const kevent& ev,
+    void on_errorish(int fd, FdState& s, const struct kevent& ev,
                      std::span<Completion>& out, int& n);
-    void dispatch_event(int fd, FdState& s, const kevent& ev,
+    void dispatch_event(int fd, FdState& s, const struct kevent& ev,
                         std::span<Completion>& out, int& n);
 
     int kq_ = -1;
 
     std::unordered_map<int, FdState> fds_;
-    std::deque<Completion> ready_;       // completed without a wait
-    std::deque<kevent> pending_events_;  // overflow from a saturated wait
+    std::deque<Completion> ready_;  // completed without a wait
+    std::deque<struct kevent>
+        pending_events_;  // overflow from a saturated wait
 };
 
 }  // namespace afx

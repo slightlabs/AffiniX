@@ -187,8 +187,7 @@ class ConnectOp {
         }
         p_->set_cancel(&cancel_thunk, this);
         parked_ = true;
-        cli_->on_state_change(
-            [this](ClientState s) { on_state(s); });
+        cli_->on_state_change([this](ClientState s) { on_state(s); });
         return true;
     }
     Result<ConnRef<P, EM>> await_resume() noexcept {
@@ -247,9 +246,7 @@ class ConnRef {
     EM& em() const noexcept { return *em_; }
     ConnId id() const noexcept { return id_; }
 
-    bool valid() const noexcept {
-        return em_ && Conn::resolve(*em_, id_);
-    }
+    bool valid() const noexcept { return em_ && Conn::resolve(*em_, id_); }
     Conn* resolve() const noexcept { return Conn::resolve(*em_, id_); }
 
     coro::RecvOp<P, EM> recv() const noexcept {

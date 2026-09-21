@@ -626,7 +626,7 @@ class BasicEventManager {
     // (3) in-flight writes drain until `deadline`, (4) connections
     // half-close, (5) the loop stops and destructors hard-close the rest.
     // Driven by Runtime::shutdown; safe to call directly on the EM thread.
-    void begin_shutdown(TimePoint deadline) {
+    void begin_shutdown(TimePoint deadline) AFX_NO_TSA {
         AFX_ASSERT_CURRENT(*this);
         if (shutting_down_) return;
         shutting_down_ = true;
@@ -1143,19 +1143,22 @@ class BasicEventManager {
         ++em.stats_.coro_completed;
     }
     // Context push/pop mirror ContextScope but stash the saved slot pair in
-    // the promise so resume/suspend nesting stays balanced without a scope
-    // object surviving across suspends.
-    static void coro_push_thunk(void* e, coro::PromiseBase* p) noexcept {
+    // the resumer's CtxSave so resume/suspend nesting stays balanced without
+    // a scope object surviving across suspends. The pair cannot live in the
+    // promise: a task finishing inside h.resume() frees its own frame.
+    static void coro_push_thunk(void* e, const Context& next,
+                                coro::EngineOps::CtxSave* save) noexcept {
         auto& em = *static_cast<BasicEventManager*>(e);
-        p->saved_ctx_ = em.ctx_;
-        p->saved_tls_ = detail::tls_ambient;
-        em.ctx_ = p->ctx;
+        save->prev = em.ctx_;
+        save->tls_prev = detail::tls_ambient;
+        em.ctx_ = next;
         detail::tls_ambient = &em.ctx_;
     }
-    static void coro_pop_thunk(void* e, coro::PromiseBase* p) noexcept {
+    static void coro_pop_thunk(void* e,
+                               const coro::EngineOps::CtxSave& save) noexcept {
         auto& em = *static_cast<BasicEventManager*>(e);
-        em.ctx_ = p->saved_ctx_;
-        detail::tls_ambient = p->saved_tls_;
+        em.ctx_ = save.prev;
+        detail::tls_ambient = save.tls_prev;
     }
     static void* coro_after_thunk(void* e, Nanos d, void* arg,
                                   void (*fire)(void*)) {

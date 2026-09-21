@@ -28,7 +28,9 @@ namespace {
 // ---- helper tasks ---------------------------------------------------------
 // First parameter carries the EM → arena-allocated frame (spike 0002).
 
-CoroTask<int> produce(SimEM&, int v) { co_return v; }
+CoroTask<int> produce(SimEM&, int v) {
+    co_return v;
+}
 
 CoroTask<void> store(SimEM&, int* out, int v) {
     *out = v;
@@ -133,9 +135,8 @@ TEST_CASE("coro: tasks are lazy — nothing runs before spawn/await") {
 }
 
 TEST_CASE("coro: zero-byte arena falls back to heap frames (observable)") {
-    afx::test::TestEnv env(
-        EventManagerConfig{.wait = WaitStrategy::Spin,
-                           .memory = {.arena_bytes = 0}});
+    afx::test::TestEnv env(EventManagerConfig{.wait = WaitStrategy::Spin,
+                                              .memory = {.arena_bytes = 0}});
     int ran = 0;
     env.em.spawn(store(env.em, &ran, 1));
     CHECK(ran == 1);
@@ -287,8 +288,7 @@ AFX_BACKEND_TEST_CASE("coro: echo session over loopback", EM) {
                         auto f = afx::test::echo_frame(std::string_view(
                             reinterpret_cast<const char*>(m.body.data()),
                             m.body.size()));
-                        auto r = co_await c.send(
-                            ByteSpan(f.data(), f.size()));
+                        auto r = co_await c.send(ByteSpan(f.data(), f.size()));
                         if (r == SendResult::Closed) co_return;
                     }
                 }
@@ -352,8 +352,8 @@ AFX_BACKEND_TEST_CASE("coro: connect awaiter + session over loopback", EM) {
                 if (!c) continue;
                 std::array<std::byte, sizeof(EchoHeader)> hdr;
                 std::memcpy(hdr.data(), &m.header, sizeof(hdr));
-                std::array<ByteSpan, 2> parts{
-                    ByteSpan(hdr.data(), hdr.size()), m.body};
+                std::array<ByteSpan, 2> parts{ByteSpan(hdr.data(), hdr.size()),
+                                              m.body};
                 (void)c->send_scatter(parts);
             }
         };

@@ -68,8 +68,7 @@ class Pool {
 
     std::size_t allocated() const noexcept { return live_; }
     std::size_t capacity() const noexcept {
-        return arena_chunks_ * chunk_objs_ +
-               heap_chunk_count_ * chunk_objs_;
+        return arena_chunks_ * chunk_objs_ + heap_chunk_count_ * chunk_objs_;
     }
     std::size_t heap_chunks() const noexcept { return heap_chunk_count_; }
 

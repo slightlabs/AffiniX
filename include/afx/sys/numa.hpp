@@ -22,7 +22,7 @@ int node_count() noexcept;
 int current_node() noexcept;
 
 struct AllocOpts {
-    int node = -1;          // >= 0: MPOL_BIND to this node
+    int node = -1;            // >= 0: MPOL_BIND to this node
     bool interleave = false;  // MPOL_INTERLEAVE over all nodes (wins over node)
     bool hugepages = false;   // try MAP_HUGETLB, then MADV_HUGEPAGE, then plain
     bool prefault = false;    // touch every page after binding (init, not peak)
@@ -53,7 +53,7 @@ class Region {
     friend Result<Region> alloc(std::size_t, const AllocOpts&);
     void* p_ = nullptr;
     std::size_t n_ = 0;
-    bool mapped_ = false;    // munmap vs free
+    bool mapped_ = false;     // munmap vs free
     bool hugepages_ = false;  // actually backed by huge pages
 };
 

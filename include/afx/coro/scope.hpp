@@ -19,8 +19,8 @@
 
 #include <coroutine>
 
-#include "afx/coro/task.hpp"
 #include "afx/core/context.hpp"
+#include "afx/coro/task.hpp"
 
 namespace afx::coro {
 
@@ -63,8 +63,7 @@ class TaskScope {
     }
 
     void request_stop() noexcept {
-        for (PromiseBase* p = children_; p; p = p->coro_next)
-            p->request_stop();
+        for (PromiseBase* p = children_; p; p = p->coro_next) p->request_stop();
     }
 
     std::size_t live() const noexcept { return live_; }

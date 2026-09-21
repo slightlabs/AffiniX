@@ -25,7 +25,7 @@ class FrameCache {
     // live in the dead user area so the header survives recycling. 16 bytes
     // keeps user pointers 16-aligned for over-aligned frame members.
     struct BlockHeader {
-        std::uint16_t cls;   // bucket index, or kHeap
+        std::uint16_t cls;  // bucket index, or kHeap
         std::uint16_t pad;
         std::uint32_t magic;  // catches cross-cache/corrupt frees
         std::uint64_t pad2;

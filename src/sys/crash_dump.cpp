@@ -52,8 +52,7 @@ void crash_handler(int sig) noexcept {
     int fd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
         for (auto& slot : g_recorders)
-            if (const FlightRecorder* r =
-                    slot.load(std::memory_order_relaxed))
+            if (const FlightRecorder* r = slot.load(std::memory_order_relaxed))
                 r->dump(fd);
         ::close(fd);
     }
@@ -81,8 +80,8 @@ void unregister_recorder(const FlightRecorder* r) noexcept {
 }
 
 void install_crash_dump(std::string_view dir) {
-    std::size_t n = dir.size() < sizeof(g_dir) - 1 ? dir.size()
-                                                 : sizeof(g_dir) - 1;
+    std::size_t n =
+        dir.size() < sizeof(g_dir) - 1 ? dir.size() : sizeof(g_dir) - 1;
     std::memcpy(g_dir, dir.data(), n);
     g_dir[n] = '\0';
 

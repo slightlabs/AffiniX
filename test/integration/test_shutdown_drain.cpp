@@ -21,10 +21,18 @@ struct FakeOwned {
     std::vector<const char*> log;
     bool drained = false;
 
-    static void begin(void* p) { static_cast<FakeOwned*>(p)->log.push_back("begin"); }
-    static void notify(void* p) { static_cast<FakeOwned*>(p)->log.push_back("notify"); }
-    static bool drained_f(void* p) { return static_cast<FakeOwned*>(p)->drained; }
-    static void half(void* p) { static_cast<FakeOwned*>(p)->log.push_back("shutdown_write"); }
+    static void begin(void* p) {
+        static_cast<FakeOwned*>(p)->log.push_back("begin");
+    }
+    static void notify(void* p) {
+        static_cast<FakeOwned*>(p)->log.push_back("notify");
+    }
+    static bool drained_f(void* p) {
+        return static_cast<FakeOwned*>(p)->drained;
+    }
+    static void half(void* p) {
+        static_cast<FakeOwned*>(p)->log.push_back("shutdown_write");
+    }
 };
 
 }  // namespace

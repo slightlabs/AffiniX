@@ -66,15 +66,15 @@ int main(int argc, char** argv) {
             for (auto& m : batch) {
                 std::size_t n = std::min(m.text.size(), kMaxLine);
                 for (std::size_t i = 0; i < n; ++i)
-                    buf[i] = std::byte(std::toupper(
-                        static_cast<unsigned char>(m.text[i])));
+                    buf[i] = std::byte(
+                        std::toupper(static_cast<unsigned char>(m.text[i])));
                 buf[n] = std::byte('\n');
                 (void)c->send(ByteSpan(buf, n + 1));
             }
         };
         h.on_error = [](ConnId, Error e) {
-            std::fprintf(stderr, "frame error: %.*s\n",
-                         int(e.message().size()), e.message().data());
+            std::fprintf(stderr, "frame error: %.*s\n", int(e.message().size()),
+                         e.message().data());
         };
         ServerConfig sc;
         sc.bind = SockAddr::any(port);

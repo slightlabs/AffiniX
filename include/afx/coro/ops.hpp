@@ -141,14 +141,13 @@ class PostReplyOp {
         st_->home = e->home_mb;
         st_->waiter_alive = true;
         st_->p->set_cancel(&cancel_thunk, st_.get());
-        PostResult pr =
-            target_.post([st = st_] { run_remote(std::move(st)); });
+        PostResult pr = target_.post([st = st_] { run_remote(std::move(st)); });
         if (pr != PostResult::Ok) {
             st_->waiter_alive = false;
             st_->p->clear_cancel();
-            st_->err = make_error(ErrorCategory::Itc,
-                                  pr == PostResult::Full ? Err::Full
-                                                         : Err::Closed);
+            st_->err =
+                make_error(ErrorCategory::Itc,
+                           pr == PostResult::Full ? Err::Full : Err::Closed);
             return false;
         }
         return true;

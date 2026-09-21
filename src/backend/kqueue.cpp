@@ -51,7 +51,7 @@ int accept_cloexec(int fd) {
 KqueueBackend::KqueueBackend() {
     kq_ = ::kqueue();
     if (kq_ >= 0) {
-        kevent ev{};
+        struct kevent ev {};
         EV_SET(&ev, kWakeIdent, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
         ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
     }
@@ -245,7 +245,7 @@ int KqueueBackend::wait(std::span<Completion> out, Nanos timeout) {
 
     // Any pending events left over from a previous saturated wait.
     while (n < int(out.size()) && !pending_events_.empty()) {
-        kevent ev = pending_events_.front();
+        struct kevent ev = pending_events_.front();
         pending_events_.pop_front();
         auto it = fds_.find(int(ev.ident));
         if (it == fds_.end()) continue;
@@ -253,7 +253,7 @@ int KqueueBackend::wait(std::span<Completion> out, Nanos timeout) {
     }
     if (n == int(out.size())) return n;
 
-    kevent evs[64];
+    struct kevent evs[64];
     timespec ts{timeout.count() / 1'000'000'000,
                 timeout.count() % 1'000'000'000};
     // Completions already queued (or a zero timeout) → poll, don't block.
@@ -265,7 +265,7 @@ int KqueueBackend::wait(std::span<Completion> out, Nanos timeout) {
     if (r < 0) return n;
 
     for (int i = 0; i < r; ++i) {
-        const kevent& ev = evs[i];
+        const struct kevent& ev = evs[i];
         if (ev.filter == EVFILT_USER && ev.ident == kWakeIdent)
             continue;  // wake marker — EV_CLEAR already consumed it
         int fd = int(ev.ident);
@@ -280,7 +280,7 @@ int KqueueBackend::wait(std::span<Completion> out, Nanos timeout) {
 }
 
 void KqueueBackend::wake() {
-    kevent ev{};
+    struct kevent ev {};
     EV_SET(&ev, kWakeIdent, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
     ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
 }
@@ -297,14 +297,14 @@ void KqueueBackend::update_filters(int fd, FdState& s) {
     // Track armed state so we never EV_DELETE a filter that was never added
     // (harmless ENOENT, but a wasted syscall either way).
     if (rd != s.rd_armed) {
-        kevent ev{};
+        struct kevent ev {};
         EV_SET(&ev, fd, EVFILT_READ, rd ? (EV_ADD | EV_CLEAR) : EV_DELETE, 0, 0,
                nullptr);
         ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
         s.rd_armed = rd;
     }
     if (wr != s.wr_armed) {
-        kevent ev{};
+        struct kevent ev {};
         EV_SET(&ev, fd, EVFILT_WRITE, wr ? (EV_ADD | EV_CLEAR) : EV_DELETE, 0,
                0, nullptr);
         ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
@@ -333,7 +333,7 @@ void KqueueBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
             c.stamps.tsc = rdtsc();
             out[n++] = c;
         } else {
-            kevent ev{};
+            struct kevent ev {};
             EV_SET(&ev, fd, EVFILT_READ, 0, 0, 0, nullptr);
             pending_events_.push_back(ev);
         }
@@ -351,7 +351,7 @@ void KqueueBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
                 out[n++] = c;
             } else {
                 ::close(cfd);  // cannot queue it; drop
-                kevent ev{};
+                struct kevent ev {};
                 EV_SET(&ev, fd, EVFILT_READ, 0, 0, 0, nullptr);
                 pending_events_.push_back(ev);
                 break;
@@ -423,7 +423,7 @@ void KqueueBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
         c.stamps.tsc = rdtsc();
         out[n++] = c;
     } else {
-        kevent ev{};
+        struct kevent ev {};
         EV_SET(&ev, fd, EVFILT_READ, 0, 0, 0, nullptr);
         pending_events_.push_back(ev);
         s.recv_armed = true;  // re-arm so the event is not lost
@@ -446,7 +446,7 @@ void KqueueBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
             c.stamps.tsc = rdtsc();
             out[n++] = c;
         } else {
-            kevent ev{};
+            struct kevent ev {};
             EV_SET(&ev, fd, EVFILT_WRITE, 0, 0, 0, nullptr);
             pending_events_.push_back(ev);
         }
@@ -468,7 +468,7 @@ void KqueueBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
             if (n < int(out.size())) {
                 out[n++] = c;
             } else {
-                kevent ev{};
+                struct kevent ev {};
                 EV_SET(&ev, fd, EVFILT_WRITE, 0, 0, 0, nullptr);
                 pending_events_.push_back(ev);
             }
@@ -485,7 +485,7 @@ void KqueueBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
             if (n < int(out.size())) {
                 out[n++] = c;
             } else {
-                kevent ev{};
+                struct kevent ev {};
                 EV_SET(&ev, fd, EVFILT_WRITE, 0, 0, 0, nullptr);
                 pending_events_.push_back(ev);
             }
@@ -500,14 +500,14 @@ void KqueueBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
             c.stamps.tsc = rdtsc();
             out[n++] = c;
         } else {
-            kevent ev{};
+            struct kevent ev {};
             EV_SET(&ev, fd, EVFILT_WRITE, 0, 0, 0, nullptr);
             pending_events_.push_back(ev);
         }
     }
 }
 
-void KqueueBackend::on_errorish(int fd, FdState& s, const kevent& ev,
+void KqueueBackend::on_errorish(int fd, FdState& s, const struct kevent& ev,
                                 std::span<Completion>& out, int& n) {
     // Surface errors through whichever op is armed. EV_EOF on a read filter
     // with a live recv means peer closed: the drain itself returns 0, so
@@ -549,7 +549,7 @@ void KqueueBackend::on_errorish(int fd, FdState& s, const kevent& ev,
     }
 }
 
-void KqueueBackend::dispatch_event(int fd, FdState& s, const kevent& ev,
+void KqueueBackend::dispatch_event(int fd, FdState& s, const struct kevent& ev,
                                    std::span<Completion>& out, int& n) {
     if (ev.flags & (EV_ERROR | EV_EOF)) on_errorish(fd, s, ev, out, n);
     if (ev.filter == EVFILT_READ) on_readable(fd, s, out, n);

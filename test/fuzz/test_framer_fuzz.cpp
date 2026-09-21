@@ -139,13 +139,42 @@ TEST_CASE("fuzz: mutated headers are rejected, never mis-parsed") {
     for (int iter = 0; iter < 300; ++iter) {
         auto f = echo_frame(random_body(rng));
         // Corrupt one random byte of the header.
-        f[rng() % EchoProto::kHeaderSize] = std::byte(rng());
-        FrameSink sink;
-        sink.feed(ByteSpan(f.data(), f.size()));
-        // A corrupt magic is an Error; a corrupt length field either errors
-        // (if the mutation hit magic) or just waits for bytes that never
-        // come — both are acceptable; a message decode is NOT.
-        CHECK(sink.bodies.size() <= 1);
+        const std::size_t pos = rng() % EchoProto::kHeaderSize;
+        const std::byte before = f[pos];
+        f[pos] = std::byte(rng());
+
+        // Assert the first parse decision directly: the sink's drop-a-byte
+        // resync deliberately retries inside the body tail, where random
+        // bytes can legitimately parse as fresh frames — that says nothing
+        // about whether the mutated header itself was accepted.
+        FixedHeaderFramer<EchoProto> framer;
+        auto pr = framer.parse(ByteSpan(f.data(), f.size()));
+        using Kind = decltype(pr)::Kind;
+
+        if (f[pos] == before) {
+            // Mutation was a no-op: the frame is intact and decodes exactly.
+            CHECK(pr.kind == Kind::Message);
+            CHECK(pr.consumed == f.size());
+            continue;
+        }
+        if (pos == 0) {
+            // A corrupt magic is the one mutation this protocol always
+            // sees — it must be an Error, never a decode.
+            CHECK(pr.kind == Kind::Error);
+            continue;
+        }
+        // Length, type and padding mutations produce a wire-valid header
+        // the protocol cannot distinguish from an honest frame (EchoProto
+        // validates magic only). The parse must then stay in bounds: it
+        // decodes the mutated frame as written, or waits for the bytes the
+        // mutated length now demands — but never reads past the buffer.
+        if (pr.kind == Kind::Message) {
+            CHECK(pr.consumed <= f.size());
+            CHECK(pr.consumed ==
+                  EchoProto::kHeaderSize + pr.message.body.size());
+        } else {
+            CHECK(pr.kind == Kind::NeedMore);
+        }
     }
 }
 

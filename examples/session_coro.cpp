@@ -52,9 +52,8 @@ CoroTask<Result<Conn::Batch>> recv_once(Conn c) {
 CoroTask<void> session(Conn c) {
     // Greet the peer, then echo frames until it leaves or idles for 30s.
     static constexpr char kHello[] = "session_coro: hello\n";
-    auto sent = co_await c.send(
-        ByteSpan(reinterpret_cast<const std::byte*>(kHello),
-                 sizeof(kHello) - 1));
+    auto sent = co_await c.send(ByteSpan(
+        reinterpret_cast<const std::byte*>(kHello), sizeof(kHello) - 1));
     if (sent == SendResult::Closed) co_return;
 
     // `frame` lives in the coroutine frame: stable across send suspensions
@@ -63,9 +62,9 @@ CoroTask<void> session(Conn c) {
     std::vector<std::byte> frame;
     for (;;) {
         auto rr = co_await coro::with_timeout(30s, recv_once(c));
-        if (!rr) co_return;             // idle deadline / stopped
-        auto& batch = *rr;              // Result<Batch>
-        if (!batch) co_return;          // peer closed or conn error
+        if (!rr) co_return;     // idle deadline / stopped
+        auto& batch = *rr;      // Result<Batch>
+        if (!batch) co_return;  // peer closed or conn error
         for (auto& m : *batch) {
             frame.resize(sizeof(EchoHeader) + m.body.size());
             std::memcpy(frame.data(), &m.header, sizeof(EchoHeader));
@@ -102,8 +101,7 @@ int main(int argc, char** argv) {
 
     rt.on_signal({SIGINT, SIGTERM}, [&] { rt.shutdown(5s); });
     rt.start();
-    std::printf("coro session server on :%d, %zu shard(s)\n", port,
-                g.size());
+    std::printf("coro session server on :%d, %zu shard(s)\n", port, g.size());
     rt.join();
     return 0;
 }

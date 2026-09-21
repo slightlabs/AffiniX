@@ -43,10 +43,16 @@ struct EngineOps {
     // final_suspend makes the list purely observability + teardown).
     void (*root_link)(void* em, void* promise) = nullptr;
     void (*root_unlink)(void* em, void* promise) = nullptr;
-    // Push/pop the task's Context as the EM's ambient context. The promise
-    // stores the saved slot pair; pushes/pops nest LIFO with the task.
-    void (*ctx_push)(void* em, PromiseBase* p) = nullptr;
-    void (*ctx_pop)(void* em, PromiseBase* p) = nullptr;
+    // Push/pop the task's Context as the EM's ambient context. The saved
+    // slot pair lives in CtxSave on the resumer's stack — a task that runs
+    // to final_suspend inside h.resume() frees its own frame, so the saved
+    // pair cannot live in the promise (M9/ASAN).
+    struct CtxSave {
+        Context prev{};
+        const Context* tls_prev = nullptr;
+    };
+    void (*ctx_push)(void* em, const Context& next, CtxSave* save) = nullptr;
+    void (*ctx_pop)(void* em, const CtxSave& save) = nullptr;
     // Arm a one-shot timer; `fire(arg)` runs on the EM thread at expiry.
     // Returns a packed TimerId token for timer_cancel.
     void* (*timer_after)(void* em, Nanos d, void* arg,
@@ -82,10 +88,6 @@ class PromiseBase {
     PromiseBase* coro_prev = nullptr;
     PromiseBase* coro_next = nullptr;
     bool is_root = false;
-
-    // Ambient-context save slot for ctx_push/ctx_pop (LIFO per task).
-    Context saved_ctx_{};
-    const Context* saved_tls_ = nullptr;
 
     // EM-teardown path: destroy the suspended frame without naming the
     // promise's concrete type. Set by the promise constructor.
@@ -132,9 +134,14 @@ class PromiseBase {
     // Resume `h` under this task's ambient context (§7.4 follows hops).
     void resume_under_ctx(std::coroutine_handle<> h) {
         if (engine && engine->ctx_push) {
-            engine->ctx_push(engine->em, this);
+            // Snapshot `engine` before resume: a task finishing inside
+            // h.resume() destroys this promise's frame — nothing in *this
+            // may be touched after the call.
+            EngineOps* e = engine;
+            EngineOps::CtxSave save;
+            e->ctx_push(e->em, ctx, &save);
             h.resume();
-            engine->ctx_pop(engine->em, this);
+            e->ctx_pop(e->em, save);
         } else {
             h.resume();
         }
@@ -147,8 +154,7 @@ class PromiseBase {
 struct FinalAwaiter {
     bool await_ready() noexcept { return false; }
     template <class P>
-    std::coroutine_handle<> await_suspend(
-        std::coroutine_handle<P> h) noexcept {
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<P> h) noexcept {
         P& p = h.promise();
         if (p.is_root && p.engine) {
             EngineOps* e = p.engine;
@@ -183,8 +189,9 @@ EngineOps* ops_of(T& first) {
                   }) {
         return first.coro_ops();
     } else if constexpr (requires(T& t) {
-                             { t.em().coro_ops() } ->
-                                 std::convertible_to<EngineOps*>;
+                             {
+                                 t.em().coro_ops()
+                             } -> std::convertible_to<EngineOps*>;
                          }) {
         return first.em().coro_ops();
     } else {
@@ -201,8 +208,8 @@ inline void* alloc_frame(EngineOps* ops, std::size_t n) {
         hdr = static_cast<FrameHeader*>(raw);
         hdr->ops = ops;
     } else {
-        hdr = static_cast<FrameHeader*>(
-            ::operator new(n + sizeof(FrameHeader)));
+        hdr =
+            static_cast<FrameHeader*>(::operator new(n + sizeof(FrameHeader)));
         hdr->ops = nullptr;
     }
     return hdr + 1;
@@ -279,8 +286,7 @@ class TaskPromise : public TaskPromiseBase<T> {
   public:
     TaskPromise() noexcept { this->destroy_frame = &self_destroy; }
     template <class U>
-    void return_value(U&& v) noexcept(
-        std::is_nothrow_move_constructible_v<U>) {
+    void return_value(U&& v) noexcept(std::is_nothrow_move_constructible_v<U>) {
         this->store(std::forward<U>(v));
     }
 
