@@ -31,7 +31,7 @@ TEST_CASE("Arena: bump allocation is aligned and bounded") {
     CHECK(a.owns(q));
     // Exhaustion returns nullptr — callers see it, nothing grows silently.
     Arena small(4096);
-    void* r = small.alloc(4096);
+    void* r = small.alloc(small.size());
     CHECK(small.alloc(1) == nullptr);
     (void)r;
     Arena empty(0);
