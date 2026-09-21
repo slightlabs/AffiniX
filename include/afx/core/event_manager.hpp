@@ -18,10 +18,11 @@
 #endif
 
 #include "afx/backend/backend.hpp"
+// epoll.hpp declares unconditionally (its .cpp is an empty TU off Linux) —
+// the Backend template default names EpollBackend on every platform.
+#include "afx/backend/epoll.hpp"
 #ifdef AFX_HAVE_KQUEUE
 #include "afx/backend/kqueue.hpp"
-#else
-#include "afx/backend/epoll.hpp"
 #endif
 #ifdef AFX_WITH_URING
 #include "afx/backend/uring.hpp"
