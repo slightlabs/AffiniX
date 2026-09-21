@@ -13,6 +13,8 @@
 
 namespace afx {
 
+class SimNet;
+
 class SimBackend {
   public:
     static constexpr bool kProactor = true;  // completions are native here
@@ -40,8 +42,15 @@ class SimBackend {
     void wake() { ++wake_count_; }
 
     // ---- test / simulation API -------------------------------------------
-    int add_fd();                       // allocate a virtual fd
-    void feed(int fd, ByteSpan bytes);  // peer -> app bytes
+    // Attach to a SimNet fabric (M10): submits then become scheduled events
+    // with latency/faults instead of instant loopback. nullptr → standalone.
+    void set_net(SimNet* n) noexcept { net_ = n; }
+    SimNet* net() const noexcept { return net_; }
+
+    int add_fd();  // allocate an fd — a real socket, so sock::apply/close on
+                   // it behave; it is never driven by the kernel
+    void deliver_connect(int fd, UserData u, int result);  // net completes
+    void feed(int fd, ByteSpan bytes);                     // peer -> app bytes
     void feed(int fd, std::string_view s);
     void close_peer(int fd);                           // peer FIN
     void fail_peer(int fd, int err);                   // peer error
@@ -64,6 +73,8 @@ class SimBackend {
         std::vector<std::byte> outbound;
         bool peer_closed = false;
         int peer_err = 0;
+        bool connect_pending = false;
+        UserData connect_ud{};
     };
 
     void push(UserData u, std::int32_t res);
@@ -73,6 +84,7 @@ class SimBackend {
     std::deque<Completion> ready_;
     int next_fd_ = 1000;
     int wake_count_ = 0;
+    SimNet* net_ = nullptr;
 };
 
 }  // namespace afx

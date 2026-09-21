@@ -1,5 +1,6 @@
 #include "afx/backend/sim.hpp"
 
+#include <sys/socket.h>
 #include <cerrno>
 #include <cstring>
 #ifdef AFX_DEBUG_CHAOS
@@ -7,6 +8,7 @@
 #endif
 
 #include "afx/net/sock_addr.hpp"
+#include "afx/sim/net.hpp"
 #include "afx/sys/clock.hpp"
 
 namespace afx {
@@ -21,6 +23,9 @@ Result<void> SimBackend::modify(int fd, Interest i, UserData u) {
     return attach(fd, i, u);
 }
 Result<void> SimBackend::detach(int fd) {
+    // A detached conn fd owes its peer a FIN through the net; listen fds and
+    // unwired fds are simply forgotten.
+    if (net_) net_->detach(*this, fd);
     fds_.erase(fd);
     return {};
 }
@@ -48,6 +53,9 @@ Result<void> SimBackend::submit_sendv(UserData u, int fd,
         total += b.size();
     }
     push(u, std::int32_t(total));
+    // The whole sendv is one ordered delivery on the wire (TCP preserves
+    // send-order); the net decides how it fragments on receipt.
+    if (net_ && total) net_->deliver_bytes(*this, fd, iov);
     return {};
 }
 
@@ -55,13 +63,22 @@ Result<void> SimBackend::submit_accept(UserData u, int listen_fd) {
     auto& s = fds_[listen_fd];
     s.accept_armed = true;
     s.accept_ud = u;
+    if (net_) net_->listen(*this, listen_fd);
     return {};
 }
 
-Result<void> SimBackend::submit_connect(UserData u, int fd, const SockAddr&) {
-    // Connects succeed immediately unless the harness says otherwise via
-    // deliver_watch-style control — the sim models an instant network.
-    fds_[fd];  // ensure state exists
+Result<void> SimBackend::submit_connect(UserData u, int fd,
+                                        const SockAddr& addr) {
+    auto& s = fds_[fd];
+    if (net_) {
+        // Routed through the fabric: completes when the ConnectDone event
+        // fires (or ECONNREFUSED if nothing listens on that port).
+        s.connect_pending = true;
+        s.connect_ud = u;
+        net_->connect(*this, fd, addr, u);
+        return {};
+    }
+    // Standalone sim: connects succeed immediately.
     push(u, 0);
     return {};
 }
@@ -74,6 +91,10 @@ Result<void> SimBackend::cancel(UserData u) {
         }
         if (s.accept_armed && s.accept_ud == u) {
             s.accept_armed = false;
+            push(u, -ECANCELED);
+        }
+        if (s.connect_pending && s.connect_ud == u) {
+            s.connect_pending = false;
             push(u, -ECANCELED);
         }
     }
@@ -92,8 +113,20 @@ int SimBackend::wait(std::span<Completion> out, Nanos) {
 // ---- test / simulation API -------------------------------------------------
 
 int SimBackend::add_fd() {
-    fds_[next_fd_];
-    return next_fd_++;
+    // A real socket fd: TcpServer's accept path runs sock::apply/getpeername/
+    // close on it, and detach()+::close() must succeed. It is never polled —
+    // all I/O is intercepted at the submit layer.
+    int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (fd < 0) fd = next_fd_++;  // fd exhaustion: fall back to a virtual id
+    fds_[fd];
+    return fd;
+}
+
+void SimBackend::deliver_connect(int fd, UserData u, int result) {
+    auto& s = fds_[fd];
+    if (!s.connect_pending || s.connect_ud != u) return;  // stale or cancelled
+    s.connect_pending = false;
+    push(u, std::int32_t(result));
 }
 
 void SimBackend::feed(int fd, ByteSpan bytes) {
@@ -119,7 +152,9 @@ void SimBackend::fail_peer(int fd, int err) {
 void SimBackend::deliver_accept(int listen_fd, int peer_fd) {
     auto& s = fds_[listen_fd];
     fds_[peer_fd];  // peer fd exists
-    if (s.accept_armed) push(s.accept_ud, peer_fd);
+    if (!s.accept_armed) return;
+    s.accept_armed = false;  // single-shot: TcpServer re-arms per completion
+    push(s.accept_ud, peer_fd);
 }
 
 void SimBackend::deliver_watch(int fd, Interest readiness) {
@@ -169,8 +204,10 @@ void SimBackend::pump_recv(int, FdState& s) {
     std::size_t n = std::min(s.inbound.size(), s.recv_buf.size());
 #ifdef AFX_DEBUG_CHAOS
     // M6-13: TCP segmentation is unspecified — deliver a random nonempty
-    // prefix so framers see every possible split across runs.
-    if (n > 1) {
+    // prefix so framers see every possible split across runs. Skipped when a
+    // SimNet owns delivery: replay needs the seeded FaultProfile there, not
+    // a random_device-seeded split here.
+    if (n > 1 && !net_) {
         static thread_local std::mt19937_64 rng{std::random_device{}()};
         n = 1 + std::size_t(rng() % n);
     }

@@ -31,6 +31,8 @@ add_library(afx STATIC
   src/sys/crash_dump.cpp
   src/backend/epoll.cpp
   src/backend/sim.cpp
+  src/sim/net.cpp
+  src/sim/runtime.cpp
   src/net/socket.cpp
   src/net/sock_addr.cpp
   src/runtime.cpp

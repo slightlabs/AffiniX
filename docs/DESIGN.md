@@ -1271,15 +1271,28 @@ reproducible interleavings.
 ```cpp
 SimRuntime sim(seed);
 sim.add_shards(4, my_app_setup);
-sim.inject(FaultProfile{.packet_loss = 0.01, .partition_ms = {50, 500},
+sim.inject(FaultProfile{.packet_loss = 0.01,
+                        .partition_chance = 0.005,
+                        .partition_window = {50ms, 500ms},
                         .partial_reads = true, .slow_peer = 0.05});
-sim.run_until(60s_virtual);
+sim.run_for(60s);
 CHECK(sim.invariants_held());
 ```
 
-A failing seed is a complete, replayable repro of a concurrency bug. This is
-the strongest available answer to "why should I trust a threading framework",
-and it is only achievable if the backend and clock are seams from the start.
+As built (M10): shards are `BasicEventManager<VirtualClock, SimBackend>`
+interleaved on one thread by a seeded scheduler; each `SimBackend` attaches
+to a shared `SimNet` fabric (`afx/sim/net.hpp`) that turns submits into
+timestamped events — connects resolve listeners by bound port, sends become
+ordered per-direction deliveries (TCP stays a FIFO stream), and
+`FaultProfile` draws loss/reset/partition/partial-read/slow-peer per send.
+`sim.post(shard, fn, delay)` is the deterministic analogue of cross-thread
+mailbox delivery. Every delivered event is appended to `sim.trace()`; a
+seed's trace is byte-identical across runs, which is what makes a failing
+seed a complete, replayable repro of a concurrency bug.
+
+This is the strongest available answer to "why should I trust a threading
+framework", and it is only achievable if the backend and clock are seams
+from the start.
 
 ### 22.4 Invariant tests worth writing early
 

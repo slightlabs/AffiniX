@@ -126,6 +126,50 @@ jobs:
         run: |
           AFX_MODEL_SEEDS="$(seq 100 50 1000 | paste -sd,)" \
             ./build/gcc-debug/test/afx_tests -tc="model:*"
+      # M10-08: the deterministic-sim campaign sweeps seeds nightly; every
+      # failure is reproducible locally with AFX_SIM_SEED=<n>. Failing seeds
+      # are collected into an artifact and filed as an issue below.
+      - name: Sim campaign — 64-seed fault sweep
+        id: sim_sweep
+        run: |
+          failed=""
+          for seed in $(seq 1 64); do
+            if ! AFX_SIM_SEED=$seed \
+                 ./build/gcc-debug/test/afx_tests -tc='sim:campaign*' \
+                 > sim_seed_$seed.log 2>&1; then
+              echo "=== FAILED seed=$seed ==="
+              cat sim_seed_$seed.log
+              failed="$failed $seed"
+            fi
+          done
+          echo "failing_seeds=$failed" >> "$GITHUB_OUTPUT"
+          if [ -n "$failed" ]; then
+            printf '%s\n' $failed > sim_failing_seeds.txt
+            exit 1
+          fi
+          echo "all 64 seeds passed"
+      - name: Upload sim failure logs
+        if: failure() && steps.sim_sweep.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-failing-seeds
+          path: |
+            sim_failing_seeds.txt
+            sim_seed_*.log
+      - name: File failing-seed issue
+        if: failure() && steps.sim_sweep.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          seeds=$(cat sim_failing_seeds.txt)
+          gh issue create \
+            --title "nightly sim campaign: failing seeds $(date +%F)" \
+            --body "Seeds: $seeds
+
+          Reproduce: \`AFX_SIM_SEED=<seed> ./build/gcc-debug/test/afx_tests -tc='sim:campaign*'\`
+
+          Trace tails are in the \`sim-failing-seeds\` artifact of run ${{ github.run_id }}." \
+            || echo "issue filing failed — see job log for seeds"
 
   # Hard gate now that the repo-wide reformat has landed (was advisory,
   # per IMPLEMENTATION_PLAN.md's CI-stages table). Pin the version so CI

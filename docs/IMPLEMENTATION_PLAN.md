@@ -651,3 +651,10 @@ Recorded here rather than silently applied, per §2, agreement 3.
    layer landed, and renaming it would have churned the entire core for a
    name. DESIGN.md §17's examples read `CoroTask` now; ADR-0005 records the
    outcome.
+5. **`FaultProfile` splits the design's `partition_ms` field into
+   `partition_chance` + `partition_window`** (M10-04). The §22.3 sketch
+   implied automatic partitions of `{50, 500}` ms; the shipped model makes
+   a partition a per-delivery Bernoulli draw that blackholes the link for a
+   window drawn uniformly from `partition_window` — an explicit probability
+   is what a seeded sweep needs. `net().partition(link, window)` remains a
+   direct test hook. §22.3's example is updated.

@@ -23,6 +23,7 @@ add_executable(afx_tests
     integration/test_client_server.cpp
     integration/test_runtime.cpp
     integration/test_shutdown_drain.cpp
+    sim/test_sim.cpp
 )
 target_link_libraries(afx_tests PRIVATE afx::afx doctest::doctest)
 target_compile_options(afx_tests PRIVATE -Wall -Wextra)

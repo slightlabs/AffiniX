@@ -160,10 +160,9 @@ class BasicEventManager {
                   std::constructible_from<Backend, BackendKind>)
         : BasicEventManager(
               std::move(cfg), Clock{},
-              make_backend<Backend>(cfg.backend, cfg.uring_sqpoll &&
-                                                     cfg.wait ==
-                                                         WaitStrategy::Spin)) {
-    }
+              make_backend<Backend>(
+                  cfg.backend,
+                  cfg.uring_sqpoll && cfg.wait == WaitStrategy::Spin)) {}
 
     BasicEventManager(EventManagerConfig cfg, Clock clock, Backend backend)
         : config_(std::move(cfg)),
@@ -311,6 +310,20 @@ class BasicEventManager {
     TimePoint now() const noexcept { return now_; }  // cached per iteration
     Clock& clock() noexcept { return clock_; }
     Backend& backend() noexcept { return backend_; }
+    // Earliest instant at which a timer could fire — the sim scheduler (M10)
+    // uses it to jump virtual time without grinding empty iterations.
+    // TimePoint::max() means no timer is armed.
+    TimePoint next_wakeup() noexcept {
+        now_ = clock_.now();
+        TimePoint nd = TimePoint::max();
+        if (TimerNode* t = heap_.top()) nd = t->expiry;
+        if (wheel_.size()) {
+            std::uint64_t t = wheel_.next_due_tick();
+            nd = std::min(
+                nd, TimePoint(Nanos(std::int64_t(t) * wheel_.tick().count())));
+        }
+        return nd;
+    }
     // Per-EM NUMA-local bump arena (§12.2). Pools carve chunks from it;
     // when exhausted (or arena_bytes == 0) alloc() returns nullptr and
     // callers fall back to the heap with visible accounting.
@@ -544,8 +557,8 @@ class BasicEventManager {
     // the EM and destroyed with it (§7.2). ShutdownHooks let them take part
     // in the §20 drain sequence (begin_shutdown below).
     struct ShutdownHooks {
-        void (*begin)(void*) = nullptr;  // stop accepting new work
-        void (*notify)(void*) = nullptr;  // tell the app shutdown is coming
+        void (*begin)(void*) = nullptr;    // stop accepting new work
+        void (*notify)(void*) = nullptr;   // tell the app shutdown is coming
         bool (*drained)(void*) = nullptr;  // in-flight writes finished?
         void (*shutdown_write)(void*) = nullptr;  // TCP half-close
     };
@@ -806,8 +819,7 @@ class BasicEventManager {
                 if (rt > c.stamps.sw_ns) {
                     latency_.kernel_to_dequeue_ns.record(rt - c.stamps.sw_ns);
                     if (c.user.kind() == std::uint8_t(OpKind::Recv))
-                        latency_.recv_to_handler_ns.record(rt -
-                                                           c.stamps.sw_ns);
+                        latency_.recv_to_handler_ns.record(rt - c.stamps.sw_ns);
                 }
                 if ((c.flags & CompletionFlag::HasHwStamp) &&
                     c.stamps.sw_ns > c.stamps.hw_ns)

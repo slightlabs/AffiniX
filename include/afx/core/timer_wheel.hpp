@@ -178,6 +178,30 @@ class TimerWheel {
         max_ticks_per_call_ = n;
     }
 
+    // Earliest tick at which any queued node could fire or cascade into
+    // view — a lower bound on the next expiry, exact for level-0 nodes.
+    // The sim scheduler (M10) jumps virtual time straight to it instead of
+    // stepping through dead ticks. ~UINT64_MAX when the wheel is empty.
+    std::uint64_t next_due_tick() const noexcept {
+        if (!count_) return ~std::uint64_t(0);
+        std::uint64_t best = ~std::uint64_t(0);
+        for (int l = 0; l < kLevels; ++l) {
+            // Slot j at level l is serviced at ticks ≡ j·256^l (mod 256^(l+1))
+            // — level-0 slots drain every tick, higher slots cascade at their
+            // digit boundary. Earliest such tick strictly after now_tick_:
+            std::uint64_t span = std::uint64_t(1) << (8 * l);
+            std::uint64_t super = span << 8;
+            std::uint64_t wprev = (now_tick_ / super) * super;
+            for (std::uint64_t j = 0; j < kSlots; ++j) {
+                if (detail::list_empty(&buckets_[l][j])) continue;
+                std::uint64_t cand = wprev + j * span;
+                if (cand <= now_tick_) cand += super;
+                if (cand < best) best = cand;
+            }
+        }
+        return best;
+    }
+
   private:
     // First advance(): move now_tick_ to `target` and re-place every queued
     // node against it. Nodes armed before run() carry absolute ticks that the
@@ -202,9 +226,8 @@ class TimerWheel {
         while (!detail::list_empty(&hold)) {
             TimerNode* n = hold.bucket_next;
             detail::list_unlink(n);
-            insert_node(
-                *n, n->expiry_tick > min_et ? n->expiry_tick : min_et,
-                now_tick_);
+            insert_node(*n, n->expiry_tick > min_et ? n->expiry_tick : min_et,
+                        now_tick_);
         }
     }
 

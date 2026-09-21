@@ -54,5 +54,9 @@
 #include "afx/coro/scope.hpp"
 #include "afx/coro/task.hpp"
 
+// deterministic simulation (M10 — test/sim layer)
+#include "afx/sim/net.hpp"
+#include "afx/sim/runtime.hpp"
+
 // runtime
 #include "afx/runtime.hpp"
