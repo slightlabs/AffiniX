@@ -10,11 +10,12 @@
 
 namespace afx::test {
 
-struct EchoHeader {
+struct __attribute__((packed)) EchoHeader {
     std::uint8_t magic;
     std::uint16_t len_be;
     std::uint8_t type;
 };
+static_assert(sizeof(EchoHeader) == 4, "wire header must be padding-free");
 struct EchoMsg {
     EchoHeader header;
     ByteSpan body;

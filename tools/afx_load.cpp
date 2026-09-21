@@ -34,11 +34,12 @@ using namespace afx;
 
 namespace {
 
-struct EchoHeader {
+struct __attribute__((packed)) EchoHeader {
     std::uint8_t magic;
     std::uint16_t len_be;
     std::uint8_t type;
 };
+static_assert(sizeof(EchoHeader) == 4, "wire header must be padding-free");
 struct EchoMsg {
     EchoHeader header;
     ByteSpan body;
@@ -64,9 +65,9 @@ struct Opts {
     double duration_s = 10.0;
     double warmup_s = 1.0;
     bool open_loop = false;
-    double rate = 0.0;        // aggregate req/s (open mode)
-    int outstanding = 1;      // closed-mode window per conn
-    std::size_t payload = 64; // body bytes; >= 8 for the stamp
+    double rate = 0.0;         // aggregate req/s (open mode)
+    int outstanding = 1;       // closed-mode window per conn
+    std::size_t payload = 64;  // body bytes; >= 8 for the stamp
     int shards = 1;
     BackendKind backend = BackendKind::Auto;
     const char* json = nullptr;
@@ -219,24 +220,36 @@ Opts parse(int argc, char** argv) {
             usage(argv[0]);
         };
         std::string_view a = arg;
-        if (a == "--conns") o.conns = std::atoi(val());
-        else if (a == "--duration") o.duration_s = std::atof(val());
-        else if (a == "--warmup") o.warmup_s = std::atof(val());
+        if (a == "--conns")
+            o.conns = std::atoi(val());
+        else if (a == "--duration")
+            o.duration_s = std::atof(val());
+        else if (a == "--warmup")
+            o.warmup_s = std::atof(val());
         else if (a == "--mode") {
             std::string_view m = val();
             o.open_loop = (m == "open");
             if (!o.open_loop && m != "closed") usage(argv[0]);
-        } else if (a == "--rate") o.rate = std::atof(val());
-        else if (a == "--outstanding") o.outstanding = std::atoi(val());
-        else if (a == "--payload") o.payload = std::size_t(std::atol(val()));
-        else if (a == "--shards") o.shards = std::atoi(val());
+        } else if (a == "--rate")
+            o.rate = std::atof(val());
+        else if (a == "--outstanding")
+            o.outstanding = std::atoi(val());
+        else if (a == "--payload")
+            o.payload = std::size_t(std::atol(val()));
+        else if (a == "--shards")
+            o.shards = std::atoi(val());
         else if (a == "--backend") {
             std::string_view b = val();
-            if (b == "epoll") o.backend = BackendKind::Epoll;
-            else if (b == "uring") o.backend = BackendKind::Uring;
-            else if (b != "auto") usage(argv[0]);
-        } else if (a == "--json") o.json = val();
-        else usage(argv[0]);
+            if (b == "epoll")
+                o.backend = BackendKind::Epoll;
+            else if (b == "uring")
+                o.backend = BackendKind::Uring;
+            else if (b != "auto")
+                usage(argv[0]);
+        } else if (a == "--json")
+            o.json = val();
+        else
+            usage(argv[0]);
     }
     if (!o.port || o.conns < 1 || o.shards < 1 || o.duration_s <= 0 ||
         o.payload < 8 || (o.open_loop && o.rate <= 0))
@@ -244,28 +257,26 @@ Opts parse(int argc, char** argv) {
     return o;
 }
 
-std::string to_json(const Opts& o, const Histogram& lat,
-                    std::uint64_t sends, std::uint64_t replies, double secs) {
+std::string to_json(const Opts& o, const Histogram& lat, std::uint64_t sends,
+                    std::uint64_t replies, double secs) {
     char head[1024];
-    std::snprintf(head, sizeof(head),
-                  "{\"tool\":\"afx-load\",\"mode\":\"%s\",\"conns\":%d,"
-                  "\"shards\":%d,\"payload\":%zu,\"duration_s\":%.3f,"
-                  "\"sends\":%llu,\"replies\":%llu,"
-                  "\"throughput_rps\":%.0f,"
-                  "\"latency_ns\":{\"count\":%llu,\"min\":%llu,\"p50\":%llu,"
-                  "\"p90\":%llu,\"p99\":%llu,\"p999\":%llu,\"max\":%llu,"
-                  "\"mean\":%.0f},\"buckets\":[",
-                  o.open_loop ? "open" : "closed", o.conns, o.shards,
-                  o.payload, secs, (unsigned long long)sends,
-                  (unsigned long long)replies,
-                  secs > 0 ? replies / secs : 0.0,
-                  (unsigned long long)lat.count(),
-                  (unsigned long long)lat.min(),
-                  (unsigned long long)lat.percentile(0.50),
-                  (unsigned long long)lat.percentile(0.90),
-                  (unsigned long long)lat.percentile(0.99),
-                  (unsigned long long)lat.percentile(0.999),
-                  (unsigned long long)lat.max(), lat.mean());
+    std::snprintf(
+        head, sizeof(head),
+        "{\"tool\":\"afx-load\",\"mode\":\"%s\",\"conns\":%d,"
+        "\"shards\":%d,\"payload\":%zu,\"duration_s\":%.3f,"
+        "\"sends\":%llu,\"replies\":%llu,"
+        "\"throughput_rps\":%.0f,"
+        "\"latency_ns\":{\"count\":%llu,\"min\":%llu,\"p50\":%llu,"
+        "\"p90\":%llu,\"p99\":%llu,\"p999\":%llu,\"max\":%llu,"
+        "\"mean\":%.0f},\"buckets\":[",
+        o.open_loop ? "open" : "closed", o.conns, o.shards, o.payload, secs,
+        (unsigned long long)sends, (unsigned long long)replies,
+        secs > 0 ? replies / secs : 0.0, (unsigned long long)lat.count(),
+        (unsigned long long)lat.min(), (unsigned long long)lat.percentile(0.50),
+        (unsigned long long)lat.percentile(0.90),
+        (unsigned long long)lat.percentile(0.99),
+        (unsigned long long)lat.percentile(0.999),
+        (unsigned long long)lat.max(), lat.mean());
     std::string out = head;
     auto& b = lat.buckets();
     for (unsigned i = 0; i < b.size(); ++i) {
@@ -297,8 +308,7 @@ int main(int argc, char** argv) {
 
     // Per-conn pacing interval: the aggregate rate is spread evenly.
     Nanos interval(0);
-    if (o.open_loop)
-        interval = Nanos(std::int64_t(1e9 * o.conns / o.rate));
+    if (o.open_loop) interval = Nanos(std::int64_t(1e9 * o.conns / o.rate));
 
     // Open-loop needs per-conn pacing, so PerConn must stay put: size the
     // vector up front and never reallocate while handlers hold pointers.
@@ -314,8 +324,7 @@ int main(int argc, char** argv) {
         made += n;
     }
 
-    std::uint64_t warmup_end =
-        realtime_ns() + std::uint64_t(o.warmup_s * 1e9);
+    std::uint64_t warmup_end = realtime_ns() + std::uint64_t(o.warmup_s * 1e9);
     for (auto& sp : shards) sp->warmup_end_rt = warmup_end;
 
     std::vector<std::thread> threads;
