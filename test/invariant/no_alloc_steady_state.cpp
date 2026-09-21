@@ -19,6 +19,7 @@
 
 #include "../test_env.hpp"
 #include "afx/core/event_manager.hpp"
+#include "afx/net/socket.hpp"
 
 using namespace afx;
 
@@ -122,7 +123,9 @@ TEST_CASE("invariant: steady-state loop iterations do not allocate") {
     EventManager em(EventManagerConfig{.wait = WaitStrategy::Spin});
 
     int fds[2];
-    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, fds) == 0);
+    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    REQUIRE(sock::set_nonblocking(fds[0]).has_value());
+    REQUIRE(sock::set_nonblocking(fds[1]).has_value());
 
     int echoes = 0;
     auto io = em.watch(fds[0], Interest::Readable, [&](IoId, std::int32_t) {

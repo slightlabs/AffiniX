@@ -150,8 +150,9 @@ TEST_CASE("invariant: on_close exactly once — EM shutdown closes conns") {
         // The accepted fd must be a real socket — apply() and teardown run
         // real syscalls on it — so hand the sim a socketpair end.
         int pair[2];
-        REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, pair) ==
-                0);
+        REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+        REQUIRE(sock::set_nonblocking(pair[0]).has_value());
+        REQUIRE(sock::set_nonblocking(pair[1]).has_value());
         env.sim().deliver_accept((*srv)->listen_fd(), pair[0]);
         env.pump(2);
         CHECK((*srv)->connection_count() == 1);
