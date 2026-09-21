@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include <cerrno>
 
 // io_uring backend tests (M8). Compiled only when AFX_WITH_URING is on; each
 // case additionally skips at runtime when ring setup is denied (containers,
@@ -130,7 +131,11 @@ TEST_CASE("uring backend: recv and send over socketpair") {
     CHECK(s.result == ssize_t(sizeof(out_msg)));
 
     char got[16]{};
-    REQUIRE(::read(sp.b, got, sizeof(got)) == ssize_t(sizeof(out_msg)));
+    ssize_t nr;
+    do {
+        nr = ::read(sp.b, got, sizeof(got));
+    } while (nr < 0 && errno == EINTR);
+    REQUIRE(nr == ssize_t(sizeof(out_msg)));
     CHECK(std::memcmp(got, out_msg, sizeof(out_msg)) == 0);
 }
 
@@ -153,7 +158,11 @@ TEST_CASE("uring backend: sendv gathers into one completion") {
     CHECK(c.result == ssize_t(sizeof(m1) + sizeof(m2)));
 
     char got[16]{};
-    REQUIRE(::read(sp.b, got, sizeof(got)) == ssize_t(sizeof(m1) + sizeof(m2)));
+    ssize_t nr;
+    do {
+        nr = ::read(sp.b, got, sizeof(got));
+    } while (nr < 0 && errno == EINTR);
+    REQUIRE(nr == ssize_t(sizeof(m1) + sizeof(m2)));
     CHECK(std::memcmp(got, m1, sizeof(m1) - 1) == 0);
     CHECK(std::memcmp(got + sizeof(m1), m2, sizeof(m2)) == 0);
 }

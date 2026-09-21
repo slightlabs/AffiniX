@@ -678,3 +678,51 @@ Recorded here rather than silently applied, per §2, agreement 3.
    placement stays fatal on Linux; on platforms with no hard pinning the
    honest outcome is a loud degradation, not a dead shard — and not silent
    affinity-tag "pinning" that isn't binding.
+10. **`Connection::shutdown_write()` is close-after-drain** (M12-01). The
+    admin endpoint needs FIN to follow the queued response bytes; an
+    immediate `::shutdown(SHUT_WR)` raced the unsent `write_buf_` and lost
+    the reply. `ConnState::ShutdownWrite` now delays the syscall until the
+    send queue drains, which is strictly closer to §13's semantics.
+11. **`pending_writes_` is pending work in `wait_timeout()`** (M12-01). A
+    mailbox task that queues a write (exactly what an admin gather reply
+    does) used to leave the EM free to block before stage 6 flushed —
+    responses stalled until the next unrelated event. Non-empty pending
+    writes now force a nonblocking iteration.
+12. **The admin HTTP/1.1 subset is one-request-per-connection**
+    (M12-01). Every response carries `Connection: close`; pipelined bytes
+    behind a request are dropped after the reply. That covers health checks,
+    Prometheus scrapes and `afx-flight` fetches — keep-alive/pipelining is
+    deliberately out of scope for a debug endpoint.
+13. **Cross-shard gathers copy only what the endpoint renders** (M12-02).
+    `LatencyMetrics` histograms are ~5 KB each; the gather payload is gated
+    by route so `/stats`/`/conns`/`/config`/`/flight` never touch them.
+    `afx-flight` also accepts the framed `AFXFLT01` multi-shard dump that
+    `/flight` emits, in addition to raw concatenated records.
+14. **`bench/admin_impact` measures a spinning shard under three admin
+    states** (M12 exit): baseline, admin EM running idle, and admin under
+    request load — split into `/healthz` (admin-local) vs gather endpoints
+    (one shard mailbox task per request). On the 4-logical-cpu dev box the
+    idle admin EM moved a pinned spinning shard by ~1% (noise); under a
+    3-thread request storm the delta over `/healthz`-only contention is the
+    gather's per-request mailbox cost. Note the run also exposed the
+    `ShutdownWrite` fd-leak fixed in note 17 — accept error storms, not
+    gather work, dominated the earliest measurements.
+15. **Per-stage duration histograms exist but are opt-in**
+    (`EventManagerConfig::profile_stages`, M12 exit). §21 lists them; the
+    seven extra clock reads per iteration stay off the hot path unless
+    enabled, and `afx_stage_ns{stage=…}` series are emitted either way.
+16. **`TcpClient::start()` is idempotent and `connect_next()`
+    close-before-destroys** (M12 hardening). A double `start()` used to
+    orphan a live connecting socket's in-flight SQE; its EBADF completion
+    then dispatched into the recycled sink slot and killed the healthy
+    replacement conn. io_uring-only, found via `/conns` testing.
+17. **`ShutdownWrite` conns keep a drain read outstanding** (M12 hardening).
+    `on_recv` used to drop every completion in non-Established states, so a
+    respond-and-close conn never observed the peer's FIN and leaked its fd —
+    under admin load that meant ~1024 leaked sockets, `EMFILE` on accept,
+    and a hot re-arm loop that starved the endpoint. The conn now drains
+    (discarding pipelined bytes) until FIN/error, and `AdminServer` sets
+    `idle_read_timeout` so a peer that never FINs is bounded.
+18. **`for_each_shard` copies the apply lambda into each posted task**
+    (M12 hardening). Capturing it by reference posted a task that read the
+    caller's dead stack frame — toggles landed with garbage values.

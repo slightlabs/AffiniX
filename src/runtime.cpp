@@ -14,6 +14,7 @@
 
 #include "afx/sys/clock.hpp"
 #include "afx/sys/crash_dump.hpp"
+#include "afx/sys/log.hpp"
 #include "afx/sys/numa.hpp"
 
 namespace afx {
@@ -82,6 +83,19 @@ EventManager* Runtime::em(std::size_t i) const {
     return i < shards_.size() ? shards_[i]->em.load() : nullptr;
 }
 
+Runtime::ShardInfo Runtime::shard_info(std::size_t i) const {
+    ShardInfo out;
+    if (i >= shards_.size()) return out;
+    const Shard& s = *shards_[i];
+    out.name = s.name;
+    out.requested_core = s.requested_core;
+    out.bound_core = s.bound_core.load(std::memory_order_relaxed);
+    out.numa_node = s.numa_node.load(std::memory_order_relaxed);
+    out.running = s.em.load(std::memory_order_acquire) != nullptr;
+    out.failed = s.failed.load(std::memory_order_relaxed);
+    return out;
+}
+
 void Runtime::on_signal(std::vector<int> sigs, std::function<void()> fn) {
     for (int s : sigs) signal_handlers_.emplace_back(s, fn);
 }
@@ -123,6 +137,7 @@ void Runtime::start() {
             case Placement::None:
                 break;
         }
+        s.requested_core = core;
         s.thread = std::thread([this, &s, core] { thread_main(s, core); });
     }
 
@@ -147,10 +162,10 @@ void Runtime::thread_main(Shard& s, int core) {
             // with a warning; a real pinning failure stays fatal.
             if (r.error() ==
                 make_error(ErrorCategory::Config, Err::Unsupported)) {
-                std::fprintf(stderr,
-                             "afx: shard '%s' requested core %d but pinning "
-                             "is unsupported here — running unpinned\n",
-                             s.name.c_str(), core);
+                AFX_LOG(LogLevel::Warn,
+                        "afx: shard '%s' requested core %d but pinning "
+                        "is unsupported here — running unpinned\n",
+                        s.name.c_str(), core);
                 core = -1;
             } else {
                 s.start_error = r.error();
@@ -176,16 +191,20 @@ void Runtime::thread_main(Shard& s, int core) {
     // names shard, core, NUMA node and wait strategy so a misplacement is
     // discoverable from stderr without attaching a profiler.
     int node = core >= 0 ? topo_.numa_node_of(core) : numa::current_node();
+    s.bound_core.store(core, std::memory_order_relaxed);
+    s.numa_node.store(node, std::memory_order_relaxed);
     const char* wait = s.cfg.em.wait == WaitStrategy::Block ? "block"
                        : s.cfg.em.wait == WaitStrategy::SpinThenBlock
                            ? "spin-then-block"
                            : "spin";
     if (core >= 0)
-        std::fprintf(stderr, "afx: shard '%s' -> core %d (numa %d) wait=%s\n",
-                     s.name.c_str(), core, node, wait);
+        AFX_LOG(LogLevel::Info,
+                "afx: shard '%s' -> core %d (numa %d) wait=%s\n",
+                s.name.c_str(), core, node, wait);
     else
-        std::fprintf(stderr, "afx: shard '%s' -> unpinned (numa %d) wait=%s\n",
-                     s.name.c_str(), node, wait);
+        AFX_LOG(LogLevel::Info,
+                "afx: shard '%s' -> unpinned (numa %d) wait=%s\n",
+                s.name.c_str(), node, wait);
 
     // M5-06: a shard bound to a different NUMA node than its NIC pays for
     // every packet in cross-node traffic. Warn loudly rather than silently
@@ -193,11 +212,11 @@ void Runtime::thread_main(Shard& s, int core) {
     if (!s.cfg.nic_ifname.empty()) {
         if (auto nic_node = topo_.numa_node_of_nic(s.cfg.nic_ifname)) {
             if (node >= 0 && *nic_node >= 0 && *nic_node != node)
-                std::fprintf(stderr,
-                             "afx: WARNING shard '%s' on numa %d but NIC '%s' "
-                             "is on numa %d\n",
-                             s.name.c_str(), node, s.cfg.nic_ifname.c_str(),
-                             *nic_node);
+                AFX_LOG(LogLevel::Warn,
+                        "afx: WARNING shard '%s' on numa %d but NIC '%s' "
+                        "is on numa %d\n",
+                        s.name.c_str(), node, s.cfg.nic_ifname.c_str(),
+                        *nic_node);
         }
     }
 

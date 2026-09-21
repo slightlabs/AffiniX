@@ -4,6 +4,7 @@
 // handed across a unix conn and usable by the receiver).
 
 #include <doctest/doctest.h>
+#include <cerrno>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -170,7 +171,10 @@ AFX_BACKEND_TEST_CASE("unix: SCM_RIGHTS passes an open fd across the conn",
 
     REQUIRE(got_fd.load() >= 0);
     char buf[64]{};
-    ssize_t nr = ::read(got_fd.load(), buf, sizeof(buf));
+    ssize_t nr;
+    do {
+        nr = ::read(got_fd.load(), buf, sizeof(buf));
+    } while (nr < 0 && errno == EINTR);
     REQUIRE(nr > 0);
     CHECK(std::string_view(buf, std::size_t(nr)) == "fd-passed-contents");
     ::close(got_fd.load());

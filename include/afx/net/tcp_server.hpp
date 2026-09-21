@@ -40,11 +40,15 @@ class TcpServer {
         : em_(&em),
           cfg_(std::move(cfg)),
           handlers_(std::move(handlers)),
+          name_(cfg_.bind.to_string()),
           // M6-02: connection objects come from the EM's NUMA-local arena;
           // heap_chunks() exposes every fallback, no hidden growth.
-          pool_(&em.arena()) {}
+          pool_(&em.arena()) {
+        em_->register_conn_source(this, &enumerate_impl);
+    }
 
     ~TcpServer() {
+        em_->unregister_conn_source(this);
         // Move conns_ out before closing: close() may synchronously invoke
         // on_conn_gone() (when the EM is no longer running, nothing will
         // ever drain a deferred notification), which erases from conns_.
@@ -213,10 +217,28 @@ class TcpServer {
     EM* em_;
     ServerConfig cfg_;
     Handlers<P> handlers_;
+    std::string name_;  // rendered bind address, stable for ConnInfo::name
     Pool<Conn> pool_;
     int listen_fd_ = -1;
     SockAddr bound_{};
     typename EM::SinkHandle accept_sink_{};
+    // M12-02: conn-table row source for the admin endpoint.
+    static void enumerate_impl(void* obj, std::vector<ConnInfo>& out) {
+        auto* self = static_cast<TcpServer*>(obj);
+        for (auto& [k, c] : self->conns_) {
+            ConnInfo ci;
+            ci.id = c->id().idx;
+            ci.gen = c->id().gen;
+            ci.role = "server";
+            ci.name = self->name_;
+            ci.peer = c->peer().addr.to_string();
+            ci.state = std::uint8_t(c->state());
+            ci.queued_write_bytes = c->queued_write_bytes();
+            ci.open_ns = c->open_ns();
+            out.push_back(std::move(ci));
+        }
+    }
+
     std::unordered_map<std::uint64_t, Conn*> conns_;
     static inline char type_tag_{};
 };

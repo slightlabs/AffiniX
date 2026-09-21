@@ -73,6 +73,19 @@ class Runtime {
     std::vector<Mailbox> mailboxes() const;
     EventManager* em(std::size_t i) const;
 
+    // Placement/introspection row for the admin endpoint (M12-02): what the
+    // shard asked for, and what it actually got. Written by the shard thread
+    // at startup, read-only afterwards.
+    struct ShardInfo {
+        std::string_view name;
+        int requested_core = -1;  // resolved at spawn (-1 = unpinned)
+        int bound_core = -1;      // after pin attempt (-1 = not pinned)
+        int numa_node = -1;
+        bool running = false;
+        bool failed = false;
+    };
+    ShardInfo shard_info(std::size_t i) const;
+
     // A stop reason is observable from Runtime (§18).
     bool stopping() const noexcept { return stopping_.load(); }
 
@@ -86,6 +99,10 @@ class Runtime {
         std::atomic<bool> ready{false};
         std::atomic<bool> failed{false};
         Error start_error{};
+        // Recorded at thread_main for /placement (M12-02).
+        int requested_core = -1;
+        std::atomic<int> bound_core{-1};
+        std::atomic<int> numa_node{-1};
     };
 
     void thread_main(Shard& s, int core);

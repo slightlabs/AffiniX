@@ -60,6 +60,10 @@
 #include "afx/coro/scope.hpp"
 #include "afx/coro/task.hpp"
 
+// L6 operations plane (M12): in-framework HTTP admin endpoint
+#include "afx/admin/http.hpp"
+#include "afx/admin/server.hpp"
+
 // deterministic simulation (M10 — test/sim layer)
 #include "afx/sim/net.hpp"
 #include "afx/sim/runtime.hpp"

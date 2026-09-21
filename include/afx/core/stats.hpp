@@ -146,6 +146,16 @@ struct LatencyMetrics {
     Histogram nic_to_kernel_ns;
     Histogram kernel_to_dequeue_ns;
     Histogram dequeue_to_handler_ns;
+
+    // Per-stage durations (§21), populated only when
+    // EventManagerConfig::profile_stages is set — the extra clock reads are
+    // off the hot path by default. Index order follows poll_once:
+    // mailbox, timers, wait, completions, defer, flush, bookkeeping.
+    static constexpr std::size_t kStageCount = 7;
+    static constexpr const char* kStageNames[kStageCount] = {
+        "mailbox", "timers", "wait",       "completions",
+        "defer",   "flush",  "bookkeeping"};
+    std::array<Histogram, kStageCount> stage_ns;
 };
 
 }  // namespace afx

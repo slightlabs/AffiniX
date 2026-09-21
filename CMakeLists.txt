@@ -38,6 +38,8 @@ add_library(afx STATIC
   src/net/sock_addr.cpp
   src/net/udp.cpp
   src/net/dns.cpp
+  src/admin/http.cpp
+  src/admin/server.cpp
   src/runtime.cpp
 )
 add_library(afx::afx ALIAS afx)
@@ -64,6 +66,7 @@ if(AFX_WITH_TIMESTAMPING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 target_compile_definitions(afx PUBLIC
+  AFX_VERSION="${PROJECT_VERSION}"
   $<$<BOOL:${AFX_FLIGHT_RECORDER}>:AFX_FLIGHT_RECORDER=1>
   $<$<BOOL:${AFX_DEBUG_CHAOS}>:AFX_DEBUG_CHAOS=1>
   $<$<BOOL:${_afx_stamp}>:AFX_WITH_TIMESTAMPING=1>

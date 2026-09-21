@@ -76,6 +76,19 @@ class FlightRecorder {
         return h < kCapacity ? std::size_t(h) : kCapacity;
     }
 
+    // In-order copy of the live window for the admin /flight endpoint
+    // (M12-04). Same layout as dump(); not async-signal-safe — called from
+    // the owning EM thread via a posted gather, so tearing is bounded by
+    // the post.
+    std::size_t snapshot(FlightRecord* out, std::size_t cap) const noexcept {
+        std::uint64_t h = head_.load(std::memory_order_relaxed);
+        std::uint64_t n = h < kCapacity ? h : kCapacity;
+        if (n > cap) n = cap;
+        for (std::uint64_t i = 0; i < n; ++i)
+            out[i] = ring_[(h - n + i) & (kCapacity - 1)];
+        return std::size_t(n);
+    }
+
   private:
     std::array<FlightRecord, kCapacity> ring_{};
     std::atomic<std::uint64_t> head_{0};

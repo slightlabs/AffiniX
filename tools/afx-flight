@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""afx-flight — decode an AffiniX flight-recorder crash dump (M7-09).
+"""afx-flight — decode an AffiniX flight-recorder dump (M7-09, M12-04).
 
-Reads raw 32-byte FlightRecord entries (see include/afx/core/flight_recorder.hpp)
-and prints a per-EM timeline ordered by TSC. A dump may concatenate rings from
-several EMs, so records are grouped by trace/handle prefix heuristics and the
-output interleaves them by timestamp.
+Two input formats:
+
+  * raw: a bare stream of 32-byte FlightRecord entries (crash-dump output).
+  * framed: the /flight admin endpoint's cross-shard format — repeated
+    {8-byte magic "AFXFLT01", u32 shard, u32 n} headers each followed by n
+    FlightRecords. Records are tagged with their shard and merged by TSC,
+    giving a global interleaved timeline across shards.
 
 Usage: afx-flight <dump.bin> [--tsc-hz N] [--json]
 
@@ -19,6 +22,9 @@ import sys
 
 REC = struct.Struct("<QB3xIIIQ")
 REC_SIZE = 32
+HDR = struct.Struct("<8sII")
+HDR_SIZE = 16
+MAGIC = b"AFXFLT01"
 
 KINDS = [
     "Accept", "Recv", "Frame", "Send", "TimerFire", "StateChange",
@@ -27,44 +33,62 @@ KINDS = [
 ]
 
 
+def decode_rec(buf, off, shard):
+    tsc, kind, handle, a, b, trace = REC.unpack_from(buf, off)
+    return {
+        "seq": off // REC_SIZE,
+        "shard": shard,
+        "tsc": tsc,
+        "kind": KINDS[kind] if kind < len(KINDS) else f"kind_{kind}",
+        "handle": handle,
+        "a": a,
+        "b": b,
+        "trace": trace,
+    }
+
+
 def decode(buf):
-    n = len(buf) // REC_SIZE
-    out = []
-    for i in range(n):
-        tsc, kind, handle, a, b, trace = REC.unpack_from(buf, i * REC_SIZE)
-        out.append({
-            "seq": i,
-            "tsc": tsc,
-            "kind": KINDS[kind] if kind < len(KINDS) else f"kind_{kind}",
-            "handle": handle,
-            "a": a,
-            "b": b,
-            "trace": trace,
-        })
-    return out
+    """Returns (records, framed). Framed input carries per-shard tags."""
+    if buf[:8] == MAGIC:
+        recs = []
+        off = 0
+        while off + HDR_SIZE <= len(buf):
+            magic, shard, n = HDR.unpack_from(buf, off)
+            if magic != MAGIC:
+                break
+            off += HDR_SIZE
+            for _ in range(n):
+                if off + REC_SIZE > len(buf):
+                    break
+                recs.append(decode_rec(buf, off, shard))
+                off += REC_SIZE
+        return recs, True
+    return [decode_rec(buf, i * REC_SIZE, -1)
+            for i in range(len(buf) // REC_SIZE)], False
 
 
 def main():
     ap = argparse.ArgumentParser(description="decode an afx flight dump")
-    ap.add_argument("dump", help="crash dump file (raw FlightRecord stream)")
+    ap.add_argument("dump", help="crash dump or /flight response file")
     ap.add_argument("--tsc-hz", type=float, default=0,
                     help="TSC frequency; when given, prints seconds offsets")
     ap.add_argument("--json", action="store_true", help="emit JSON")
     args = ap.parse_args()
 
     with open(args.dump, "rb") as f:
-        recs = decode(f.read())
+        recs, framed = decode(f.read())
     if not recs:
         print("afx-flight: empty or truncated dump", file=sys.stderr)
         return 1
 
     # Order by TSC; a wrapped recorder keeps monotonic order within a ring,
-    # and across rings global sort is the best we can do without calibration.
-    recs.sort(key=lambda r: r["tsc"])
+    # and across rings/shards global sort is the best we can do without
+    # calibration. trace ties break within a shard's own ordering.
+    recs.sort(key=lambda r: (r["tsc"], r["shard"], r["trace"]))
     t0 = recs[0]["tsc"]
 
     if args.json:
-        print(json.dumps({"records": recs, "tsc0": t0}))
+        print(json.dumps({"records": recs, "tsc0": t0, "framed": framed}))
         return 0
 
     for r in recs:
@@ -72,7 +96,8 @@ def main():
             ts = f"{(r['tsc'] - t0) / args.tsc_hz:12.6f}s"
         else:
             ts = f"+{r['tsc'] - t0:>16d} tsc"
-        print(f"{ts}  {r['kind']:<16} h={r['handle']:<8} "
+        shard = f"s{r['shard']:<3}" if framed else "    "
+        print(f"{ts}  {shard}{r['kind']:<16} h={r['handle']:<8} "
               f"a={r['a']:<10} b={r['b']:<10} trace={r['trace']:x}")
     return 0
 

@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include <cerrno>
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -140,6 +141,7 @@ AFX_BACKEND_TEST_CASE("loopback: TcpServer echoes frames to a real client",
     std::size_t got = 0;
     while (got < reply.size()) {
         ssize_t n = ::recv(c, reply.data() + got, reply.size() - got, 0);
+        if (n < 0 && errno == EINTR) continue;  // interrupted, not failed
         REQUIRE(n > 0);
         got += std::size_t(n);
     }

@@ -124,6 +124,14 @@ class Connection {
     ConnState state() const noexcept { return state_; }
     EM& em() const noexcept { return *em_; }
     const Peer& peer() const noexcept { return peer_; }
+
+    // Nanoseconds the connection has been Established — ConnInfo::open_ns.
+    std::uint64_t open_ns() const noexcept {
+        if (established_at_.time_since_epoch() == Nanos::zero()) return 0;
+        auto d = em_->now() - established_at_;
+        return d.count() > 0 ? std::uint64_t(d.count()) : 0;
+    }
+
     std::size_t queued_write_bytes() const noexcept {
         return write_buf_.size();
     }
@@ -132,6 +140,7 @@ class Connection {
     void start(Peer peer) {
         peer_ = peer;
         state_ = ConnState::Established;
+        established_at_ = em_->now();
         if (params_.timestamping) em_->backend_set_timestamping(fd_, true);
         if (params_.fd_passing)
             em_->backend_set_fd_inbox(
@@ -173,10 +182,17 @@ class Connection {
         return SendResult::Queued;
     }
 
+    // Close-after-drain (§13): FIN must follow the queued bytes — an
+    // immediate ::shutdown(SHUT_WR) would make the kernel reject the
+    // not-yet-submitted write_buf_ contents with EPIPE.
     void shutdown_write() {
         if (state_ != ConnState::Established) return;
         state_ = ConnState::ShutdownWrite;
-        if (fd_ >= 0) ::shutdown(fd_, SHUT_WR);
+        // The drain read (armed below in on_recv) waits for the peer's FIN;
+        // bound that wait the same way an idle Established read is bounded.
+        arm_idle_timer();
+        if (!write_inflight_ && write_buf_.empty() && fd_ >= 0)
+            ::shutdown(fd_, SHUT_WR);
     }
 
     // Send descriptors via SCM_RIGHTS (M11-06, unix conns). The rights
@@ -326,9 +342,36 @@ class Connection {
         em_->submit_recv(sink_, fd_, w);
     }
 
+    // ShutdownWrite drain (§13): our FIN is out or flushing; one outstanding
+    // read remains so the peer's FIN/error still reaches on_recv — the conn
+    // can't fully close without it. arm_recv() can't be used: it guards on
+    // Established. Any bytes that do arrive are never committed, so the
+    // scratch space is simply reused.
+    void arm_drain_recv() {
+        if (fd_ < 0) return;
+        auto w = read_buf_.writable(4096);
+        em_->submit_recv(sink_, fd_, w);
+    }
+
     void on_recv(const Completion& c) {
         if (coro_.on) coro_.armed = false;  // the in-flight read completed
-        if (state_ != ConnState::Established) return;
+        if (state_ != ConnState::Established) {
+            // Half-closed conn (§13 close-after-drain): our FIN is out or
+            // flushing; keep an outstanding read so the peer's FIN — the
+            // event that fully closes the conn — is still observed.
+            // Bytes arriving now (pipelined past our close) are dropped.
+            if (coro_.on || state_ != ConnState::ShutdownWrite) return;
+            if (c.result == 0) {
+                close(CloseReason::PeerFin);
+            } else if (c.result < 0 && c.result != -EAGAIN &&
+                       c.result != -ECANCELED) {
+                close(CloseReason::Error);
+            } else {
+                arm_idle_timer();
+                arm_drain_recv();
+            }
+            return;
+        }
         if (c.result < 0) {
             if (c.result == -EAGAIN || c.result == -ECANCELED) {
                 rearm_recv();
@@ -378,6 +421,10 @@ class Connection {
         if (!batch_.empty()) dispatch_batch();
         // Coroutine sessions pace reads via recv(); callback mode re-arms.
         if (state_ == ConnState::Established && !coro_.on) arm_recv();
+        // The message handler may have half-closed us (e.g. the admin
+        // endpoint's respond-and-close) — arm the drain read for its FIN.
+        else if (state_ == ConnState::ShutdownWrite && !coro_.on)
+            arm_drain_recv();
     }
 
     // SCM_RIGHTS delivery (M11-06): the backend harvested descriptors into
@@ -443,7 +490,7 @@ class Connection {
             return;
         ByteSpan b = write_buf_.readable();
         write_inflight_ = b.size();
-        em_->submit_send(sink_, fd_, b);
+        (void)em_->submit_send(sink_, fd_, b);
     }
 
     void on_sent(const Completion& c) {
@@ -458,6 +505,10 @@ class Connection {
         em_->stats().bytes_out += std::uint64_t(c.result);
         em_->recorder().record(EventKind::Send, id_.idx,
                                std::uint32_t(c.result));
+
+        if (state_ == ConnState::ShutdownWrite && write_buf_.empty() &&
+            fd_ >= 0)
+            ::shutdown(fd_, SHUT_WR);  // drain complete → FIN
 
         if (backpressured_ &&
             write_buf_.size() <= params_.flow.write_low_watermark) {
@@ -668,6 +719,7 @@ class Connection {
     bool backpressured_ = false;
     bool read_paused_ = false;
     ConnState state_ = ConnState::Connecting;
+    TimePoint established_at_{};
     Peer peer_{};
     TimerGroup group_{};
     TimerId idle_timer_{};

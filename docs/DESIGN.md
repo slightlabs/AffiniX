@@ -1174,7 +1174,17 @@ counts (debug).
 lateness, mailbox queue latency, `recv`→`on_messages` latency, write queue
 depth, and — where timestamping is available (§9.4) — NIC→kernel,
 kernel→dequeue and dequeue→handler intervals, plus deadline headroom remaining
-at completion (the metric that says whether budgets are realistic).
+at completion (the metric that says whether budgets are realistic). Per-stage
+timing is gated by `EventManagerConfig::profile_stages` — the extra clock
+reads stay off the hot path unless profiling is explicitly on.
+
+**Served by AffiniX itself** (M12): a dedicated `Block`-mode EM runs a
+minimal HTTP/1.1 subset — `GET /healthz /version /stats /metrics
+/conns /placement /config /flight` plus `POST /admin/stall_threshold`,
+`/admin/chaos`, `/admin/log_level`. Cross-shard state is collected through
+shard mailboxes with a gather deadline; `/metrics` is Prometheus text;
+`/flight` emits the framed per-shard dump `tools/afx-flight` merges into a
+TSC-ordered timeline.
 
 **Derived, and the metric to watch:** `idle_ratio` per EM. It is the signal for
 whether to add shards, and it must exist from day one rather than be inferred

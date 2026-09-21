@@ -75,9 +75,15 @@ class TcpClient {
           handlers_(std::move(handlers)),
           // A client holds one connection at a time; a small pool covers
           // reconnect churn without per-connect heap traffic (M6-02).
-          pool_(&em.arena(), 4) {}
+          pool_(&em.arena(), 4),
+          name_(cfg_.unix_target ? cfg_.unix_target->to_string()
+                                 : cfg_.target.host + ":" +
+                                       std::to_string(cfg_.target.port)) {
+        em_->register_conn_source(this, &enumerate_impl);
+    }
 
     ~TcpClient() {
+        em_->unregister_conn_source(this);
         // Detach the attempt lists first: close() notifies on_conn_gone
         // synchronously when the EM has stopped, and reclaim_attempt must
         // not double-destroy what we destroy below.
@@ -103,6 +109,11 @@ class TcpClient {
     TcpClient& operator=(const TcpClient&) = delete;
 
     Result<void> start() {
+        // Idempotent: make_client() already starts; an explicit start() on a
+        // client with an attempt or conn in flight is a no-op rather than a
+        // re-entrant connect that would orphan the live conn's sink.
+        if (conn_ || resolving_ || !pending_.empty() || !closing_.empty())
+            return {};
         // Observe Connected via the user's on_open path.
         auto user_open = std::move(handlers_.on_open);
         handlers_.on_open = [this, u = std::move(user_open)](ConnId id,
@@ -240,13 +251,21 @@ class TcpClient {
             (void)sock::bind(raw, *cfg_.bind_local, false, false);
 
         if (conn_) {
+            // A live conn must be closed, not just destroyed: teardown()
+            // releases its sink so in-flight CQEs die on the gen check
+            // instead of dispatching into recycled pool memory.
+            conn_->close(CloseReason::LocalClose);
             pool_.destroy(conn_);
             conn_ = nullptr;
         }
         conn_ = pool_.construct(
             *em_, raw, handlers_,
-            typename Conn::Params{
-                cfg_.flow, {}, {}, {}, cfg_.sock.timestamping, cfg_.fd_passing},
+            typename Conn::Params{cfg_.flow,
+                                  {},
+                                  {},
+                                  em_->config().memory.read_buffer_size,
+                                  cfg_.sock.timestamping,
+                                  cfg_.fd_passing},
             this, &TcpClient::on_conn_gone);
         if (!conn_) {
             ::close(raw);
@@ -341,8 +360,12 @@ class TcpClient {
             (void)sock::bind(raw, *cfg_.bind_local, false, false);
         Conn* c = pool_.construct(
             *em_, raw, attempt_handlers_,
-            typename Conn::Params{
-                cfg_.flow, {}, {}, {}, cfg_.sock.timestamping, cfg_.fd_passing},
+            typename Conn::Params{cfg_.flow,
+                                  {},
+                                  {},
+                                  em_->config().memory.read_buffer_size,
+                                  cfg_.sock.timestamping,
+                                  cfg_.fd_passing},
             this, &TcpClient::on_conn_gone);
         if (!c) {
             ::close(raw);
@@ -450,11 +473,15 @@ class TcpClient {
     static void on_conn_gone(void* self, ConnId id, CloseReason r) {
         auto* me = static_cast<TcpClient*>(self);
         // The notification is deferred — only drop the conn if it is still
-        // the one that died (a reconnect may already have replaced it).
+        // the one that died (a reconnect may already have replaced it), and
+        // ignore notifies for conns already detached (e.g. replaced inside
+        // connect_next, whose teardown defers this same notify).
+        bool ours = true;
         if (me->conn_ && me->conn_->id() == id)
             me->destroy_conn();
         else
-            me->reclaim_attempt(id);
+            ours = me->reclaim_attempt(id);
+        if (!ours) return;
         if (r == CloseReason::ConnectFailed) {
             // Sequential mode retries the next resolved address; HE drives
             // its own failover from reclaim_attempt.
@@ -467,21 +494,44 @@ class TcpClient {
 
     // Reclaim a finished HE attempt (loser teardown or connect failure) and
     // advance the attempt set. Runs on the deferred notify, so pending_ has
-    // already been detached from the winner.
-    void reclaim_attempt(ConnId id) {
+    // already been detached from the winner. Returns false when the id
+    // matched nothing (stale notify for a conn we no longer track).
+    bool reclaim_attempt(ConnId id) {
         for (auto it = pending_.begin(); it != pending_.end(); ++it)
             if ((*it)->id() == id) {
                 pool_.destroy(*it);
                 pending_.erase(it);
                 he_attempt_done(nullptr);
-                return;
+                return true;
             }
         for (auto it = closing_.begin(); it != closing_.end(); ++it)
             if ((*it)->id() == id) {
                 pool_.destroy(*it);
                 closing_.erase(it);
-                return;
+                return true;
             }
+        return false;
+    }
+
+    // M12-02: conn-table row source for the admin endpoint — reports the
+    // live conn plus HE attempts still in flight or being torn down.
+    static void enumerate_impl(void* obj, std::vector<ConnInfo>& out) {
+        auto* self = static_cast<TcpClient*>(obj);
+        auto row = [&](Conn* c, std::string_view role) {
+            ConnInfo ci;
+            ci.id = c->id().idx;
+            ci.gen = c->id().gen;
+            ci.role = role;
+            ci.name = self->name_;
+            ci.peer = c->peer().addr.to_string();
+            ci.state = std::uint8_t(c->state());
+            ci.queued_write_bytes = c->queued_write_bytes();
+            ci.open_ns = c->open_ns();
+            out.push_back(std::move(ci));
+        };
+        if (self->conn_) row(self->conn_, "client");
+        for (auto* c : self->pending_) row(c, "client-he");
+        for (auto* c : self->closing_) row(c, "client-he-closing");
     }
 
     EM* em_;
@@ -503,6 +553,7 @@ class TcpClient {
     TimerGroup group_{};
     TimerGroup he_group_{};  // stagger + overall HE deadline timers
     std::mt19937_64 rng_{std::random_device{}()};
+    std::string name_;  // rendered target, stable for ConnInfo::name
 };
 
 // EventManager::make_client

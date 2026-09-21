@@ -6,8 +6,10 @@ A C++20 framework for thread-affine, event-driven applications.
 > thread's execution context. Nothing is shared implicitly. Cross-thread
 > interaction is always an explicit message.
 
-**Status: design only.** No implementation yet. The design is the deliverable
-at this stage; the API sketches below are proposals, not shipped interfaces.
+**Status: milestones M0–M12 implemented.** TCP servers/clients, epoll and
+io_uring backends, timers, cancellation, backpressure, placement, coroutines,
+deterministic simulation, UDP/DNS/Unix sockets, and the admin observability
+endpoint are all landed and tested (223 cases). M13 layers are post-v1.
 
 ## What it is for
 
@@ -54,6 +56,19 @@ rt.on_signal({SIGINT, SIGTERM}, [&] { rt.shutdown(30s); });
 rt.start();
 rt.join();
 ```
+
+## Examples
+
+Runnable programs under `examples/` (built into `build/examples/`):
+
+- `echo_server` — the minimal framed echo server
+- `custom_framing` — an application-defined wire protocol
+- `itc_pingpong` — cross-shard message passing
+- `timer_zoo` — one-shot, repeating and group-cancelled timers
+- `session_coro` — coroutine sessions (`afx::CoroTask`)
+- `observable_server` — echo shards plus the admin endpoint: `GET /healthz
+  /version /stats /metrics /conns /placement /config /flight` and runtime
+  `POST /admin/…` toggles on a dedicated `Block`-mode EM
 
 ## Documentation
 

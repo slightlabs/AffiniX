@@ -95,6 +95,9 @@ struct EventManagerConfig {
     // through the kernel's poll thread with zero syscalls. Degrades silently
     // to a normal ring when SQPOLL is denied.
     bool uring_sqpoll = true;
+    // M12: time each poll_once stage into latency_.stage_ns — extra clock
+    // reads per iteration, so it is opt-in rather than always-on.
+    bool profile_stages = false;
 };
 
 struct IterationInfo {
@@ -105,6 +108,25 @@ struct IterationInfo {
     bool did_defer = false;
     Nanos duration{};
 };
+
+// A row of the admin endpoint's connection table (M12-02). Strings are
+// rendered per query on the EM thread — the admin path is never hot, and a
+// fixed-size row would truncate Unix paths.
+struct ConnInfo {
+    std::uint32_t id = 0;    // ConnId.idx
+    std::uint32_t gen = 0;   // ConnId.gen
+    std::string_view role;   // "server" / "client" — static storage
+    std::string_view name;   // bind/target label owned by the source object
+    std::string peer;        // rendered SockAddr
+    std::uint8_t state = 0;  // ConnState
+    std::uint64_t queued_write_bytes = 0;
+    std::uint64_t open_ns = 0;  // age when snapshot was taken
+};
+
+// Type-erased enumeration hook registered by TcpServer/TcpClient (and any
+// user object owning connections) so the admin endpoint can walk live
+// connections without the EM knowing the concrete protocol types.
+using ConnEnumFn = void (*)(void* obj, std::vector<ConnInfo>& out);
 
 // RAII scope installing a Context as the EM's ambient context.
 class ContextScope {
@@ -287,17 +309,35 @@ class BasicEventManager {
         now_ = clock_.now();
         auto iter_start = now_;
 
+        const bool prof = config_.profile_stages;
+        TimePoint lap_t = prof ? clock_.now_uncached() : TimePoint{};
+        auto lap = [&](std::size_t s) {
+            if (!prof) return;
+            TimePoint t2 = clock_.now_uncached();
+            Nanos d = t2 - lap_t;
+            latency_.stage_ns[s].record(
+                std::uint64_t(std::max<Nanos>(d, Nanos::zero()).count()));
+            lap_t = t2;
+        };
+
         info.did_mailbox = drain_mailbox();  // 1
-        info.did_timers = expire_timers();   // 2
-        Nanos timeout = wait_timeout();      // 3
+        lap(0);
+        info.did_timers = expire_timers();  // 2
+        lap(1);
+        Nanos timeout = wait_timeout();  // 3
         int nio = backend_.wait(comp_buf_, timeout);
+        lap(2);
         if (blocked_)  // publish Running again
             mb_->state.store(MailboxState::Running, std::memory_order_seq_cst);
         dispatch_completions(nio);  // 4
+        lap(3);
         info.did_io = nio > 0;
         info.did_defer = run_deferred();  // 5
-        flush_writes();                   // 6
-        bookkeeping(info, iter_start);    // 7
+        lap(4);
+        flush_writes();  // 6
+        lap(5);
+        bookkeeping(info, iter_start);  // 7
+        lap(6);
         return info.did_mailbox || info.did_timers || info.did_io ||
                info.did_defer;
     }
@@ -603,6 +643,46 @@ class BasicEventManager {
     // ----------------------------------------------------------
     const Stats& stats() const noexcept { return stats_; }
     Stats& stats() noexcept { return stats_; }
+
+    // M12-05 runtime toggles. EM-affine — drive via mailbox from other
+    // threads; the admin endpoint does exactly that.
+    void set_stall_threshold(Nanos t) noexcept { config_.stall_threshold = t; }
+
+    // Chaos shuffling (M6-13) compiled in? Then it can be paused at runtime.
+    // In non-chaos builds this reports false and the setter is a no-op.
+    bool chaos_enabled() const noexcept {
+#ifdef AFX_DEBUG_CHAOS
+        return chaos_on_;
+#else
+        return false;
+#endif
+    }
+    void set_chaos(bool on) noexcept {
+#ifdef AFX_DEBUG_CHAOS
+        chaos_on_ = on;
+#else
+        (void)on;
+#endif
+    }
+    // Connection introspection (M12-02). EM-affine: register/unregister from
+    // the owning object's ctor/dtor on the EM thread; enumerate likewise.
+    // Pre-run setup may legally happen on the thread that will run() the EM
+    // (not necessarily the constructing one) — ownership is only claimed at
+    // run(), so the assert applies once the loop is live.
+    void register_conn_source(void* obj, ConnEnumFn fn) {
+        assert(!is_running() || is_current());
+        conn_sources_.push_back({obj, fn});
+    }
+    void unregister_conn_source(void* obj) {
+        assert(!is_running() || is_current());
+        std::erase_if(conn_sources_,
+                      [&](const ConnSource& s) { return s.obj == obj; });
+    }
+    void enumerate_conns(std::vector<ConnInfo>& out) {
+        assert(!is_running() || is_current());
+        for (auto& s : conn_sources_) s.fn(s.obj, out);
+    }
+
     LatencyMetrics& latency() noexcept { return latency_; }
     const EventManagerConfig& config() const noexcept { return config_; }
     FlightRecorder& recorder() noexcept { return recorder_; }
@@ -772,6 +852,9 @@ class BasicEventManager {
         }
         if (!defer_next_.empty()) may_block = false;
         if (!mb_->ring.empty()) may_block = false;
+        // Stage 6 flush happens after the wait — bytes queued by mailbox
+        // tasks (stage 1) are pending work and must not let us sleep.
+        if (!pending_writes_.empty()) may_block = false;
 
         Nanos timeout = Nanos::zero();
         if (may_block) {
@@ -1015,6 +1098,14 @@ class BasicEventManager {
     LatencyMetrics latency_;
     FlightRecorder recorder_;
 
+    // Admin introspection registry (M12-02): objects owning connections
+    // register a type-erased enumerator; /conns walks it on the EM thread.
+    struct ConnSource {
+        void* obj;
+        ConnEnumFn fn;
+    };
+    std::vector<ConnSource> conn_sources_;
+
     std::thread::id owner_;
     TimePoint spin_until_{};  // epoch default: blocks until first work
     bool blocked_ = false;
@@ -1082,14 +1173,17 @@ class BasicEventManager {
     // (completion dispatch, write-flush order, slot reclamation) so test
     // suites can't ossify against incidental implementation order.
     std::mt19937_64 chaos_{std::random_device{}()};
+    // M12-05: `chaos_on_` is a runtime gate — pausing the shuffle while
+    // reproducing a bug beats rebuilding without the flag.
+    bool chaos_on_ = true;
     template <class T>
     void chaos_shuffle(std::vector<T>& v) {
-        if (v.size() > 1) std::shuffle(v.begin(), v.end(), chaos_);
+        if (chaos_on_ && v.size() > 1) std::shuffle(v.begin(), v.end(), chaos_);
     }
     template <class T>
     void chaos_shuffle_n(std::vector<T>& v, std::size_t n) {
         n = std::min(n, v.size());
-        if (n > 1) std::shuffle(v.begin(), v.begin() + n, chaos_);
+        if (chaos_on_ && n > 1) std::shuffle(v.begin(), v.begin() + n, chaos_);
     }
 #else
     template <class T>

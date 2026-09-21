@@ -26,6 +26,7 @@ add_executable(afx_tests
     integration/test_udp.cpp
     integration/test_dns.cpp
     integration/test_unix.cpp
+    integration/test_admin.cpp
     sim/test_sim.cpp
 )
 target_link_libraries(afx_tests PRIVATE afx::afx doctest::doctest)

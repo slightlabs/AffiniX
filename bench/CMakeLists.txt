@@ -33,6 +33,15 @@ target_link_libraries(bench_udp_batch PRIVATE afx::afx)
 target_include_directories(bench_udp_batch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(bench_udp_batch PRIVATE -Wall -Wextra)
 
+# M12 exit: admin-on-Block-EM impact on a pinned spinning shard — pure
+# compute (defer chain) throughput across baseline / admin-idle / request
+# hammer phases, so loopback kernel work can't masquerade as admin cost.
+# Networked binary; built, never a ctest.
+add_executable(bench_admin_impact admin_impact.cpp)
+target_link_libraries(bench_admin_impact PRIVATE afx::afx)
+target_include_directories(bench_admin_impact PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(bench_admin_impact PRIVATE -Wall -Wextra)
+
 foreach(bench_name IN ITEMS itc_pingpong channel_throughput timer_ops)
   add_executable(bench_${bench_name} ${bench_name}.cpp)
   target_link_libraries(bench_${bench_name}
