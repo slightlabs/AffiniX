@@ -30,11 +30,14 @@ add_library(afx STATIC
   src/sys/numa.cpp
   src/sys/crash_dump.cpp
   src/backend/epoll.cpp
+  src/backend/kqueue.cpp   # self-guards to an empty TU on non-BSD platforms
   src/backend/sim.cpp
   src/sim/net.cpp
   src/sim/runtime.cpp
   src/net/socket.cpp
   src/net/sock_addr.cpp
+  src/net/udp.cpp
+  src/net/dns.cpp
   src/runtime.cpp
 )
 add_library(afx::afx ALIAS afx)
@@ -53,10 +56,17 @@ if(AFX_WITH_URING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(afx PUBLIC AFX_WITH_URING=1)
 endif()
 
+# SO_TIMESTAMPING is a Linux socket option — the define only applies there;
+# on other platforms the timestamping parser compiles to a no-op.
+set(_afx_stamp 0)
+if(AFX_WITH_TIMESTAMPING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(_afx_stamp 1)
+endif()
+
 target_compile_definitions(afx PUBLIC
   $<$<BOOL:${AFX_FLIGHT_RECORDER}>:AFX_FLIGHT_RECORDER=1>
   $<$<BOOL:${AFX_DEBUG_CHAOS}>:AFX_DEBUG_CHAOS=1>
-  $<$<BOOL:${AFX_WITH_TIMESTAMPING}>:AFX_WITH_TIMESTAMPING=1>
+  $<$<BOOL:${_afx_stamp}>:AFX_WITH_TIMESTAMPING=1>
   $<$<CONFIG:Debug>:AFX_DEBUG=1>)
 
 if(AFX_THREAD_SAFETY_ANALYSIS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")

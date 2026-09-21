@@ -1142,8 +1142,11 @@ Provided behaviours:
 rt.on_signal({SIGINT, SIGTERM}, [&] { rt.shutdown(30s); });
 ```
 
-- Signals are handled with `signalfd` (Linux) or `EVFILT_SIGNAL` (BSD) on one
-  designated EM — never in an async signal handler.
+- Signals are handled with `signalfd` (Linux) or a self-pipe fed by plain
+  `sigaction` handlers (macOS/BSD) on one designated thread — never in an
+  async signal handler. (The design said `EVFILT_SIGNAL`; the shipped signal
+  thread isn't an EM, so it owns no kqueue — the self-pipe keeps the same
+  "signal byte becomes loop work" shape with no backend dependency.)
 - `Runtime::shutdown(timeout)` runs a defined drain sequence:
   1. stop accepting (close listeners, so the kernel refuses new connections);
   2. notify shards via `on_draining`;

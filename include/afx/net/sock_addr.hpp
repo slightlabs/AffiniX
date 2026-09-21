@@ -21,6 +21,11 @@ class SockAddr {
     static SockAddr ipv4(std::uint32_t addr_be, std::uint16_t port);
     static SockAddr any(std::uint16_t port);       // 0.0.0.0:port
     static SockAddr loopback(std::uint16_t port);  // 127.0.0.1:port
+    // Unix-domain path (M11-05). Filesystem paths only — no abstract '\0'
+    // namespace (a leading '@' is kept literal, not translated).
+    static Result<SockAddr> unix_domain(std::string_view path);
+    // Filesystem path for AF_UNIX addrs, empty view otherwise.
+    std::string_view unix_path() const noexcept;
 
     const sockaddr* addr() const noexcept {
         return reinterpret_cast<const sockaddr*>(&ss_);

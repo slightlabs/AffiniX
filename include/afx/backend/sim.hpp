@@ -35,6 +35,9 @@ class SimBackend {
 
     // Virtual time, virtual wires: no stamps to deliver (§9.4).
     void set_timestamping(int, bool) {}
+    // SCM_RIGHTS is a real-kernel facility; sim links carry bytes only, so
+    // the inbox is registered but never fills (M11-06).
+    void set_fd_inbox(int, FdInbox) {}
     // No kernel ring: MSG_RING wakes are io_uring-only (M8-05).
     int wake_ring_fd() const noexcept { return -1; }
 

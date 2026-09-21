@@ -11,6 +11,14 @@
 #include "afx/sys/result.hpp"
 #include "afx/sys/types.hpp"
 
+// Platform capability: kqueue is the native readiness API on macOS and the
+// BSDs (M11-07). The kqueue backend and its tests compile only under this
+// macro; on Linux the file is an empty TU.
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
+    defined(__NetBSD__) || defined(__DragonFly__)
+#define AFX_HAVE_KQUEUE 1
+#endif
+
 namespace afx {
 
 class SockAddr;  // fwd; defined in net/sock_addr.hpp
@@ -65,6 +73,10 @@ struct CompletionFlag {
     static constexpr std::uint32_t HasHwStamp = 1u << 0;
     static constexpr std::uint32_t HasSwStamp = 1u << 1;
     static constexpr std::uint32_t More = 1u << 2;  // multishot
+    // M11-06 SCM_RIGHTS: the recv carried descriptors into the registered
+    // FdInbox; FdTrunc means MSG_CTRUNC — excess fds were closed, some lost.
+    static constexpr std::uint32_t HasFds = 1u << 3;
+    static constexpr std::uint32_t FdTrunc = 1u << 4;
     // For Watch-kind completions, `result` carries a readiness mask instead
     // of a byte count.
     static constexpr std::int32_t ReadyRead = 1;
@@ -79,6 +91,16 @@ struct Completion {
         0;  // bytes transferred, accepted fd, ready mask, or -errno
     std::uint32_t flags = 0;
     Timestamps stamps{};  // zeroed when unavailable
+};
+
+// SCM_RIGHTS landing pad (M11-06): registered per fd by the Connection; the
+// backend fills `buf`/`count` from recvmsg cmsgs on each recv completion.
+// The arrays are caller-owned — the backend writes them on the EM thread,
+// the Connection reads them when the completion arrives.
+struct FdInbox {
+    int* buf = nullptr;  // caller storage, `cap` ints
+    std::uint32_t cap = 0;
+    std::uint32_t* count = nullptr;  // overwritten per recv: 0 or #stored
 };
 
 template <class B>
@@ -97,6 +119,8 @@ concept IoBackend =
         { b.submit_connect(u, fd, addr) } -> std::same_as<Result<void>>;
         { b.cancel(u) } -> std::same_as<Result<void>>;
         { b.set_timestamping(fd, true) } -> std::same_as<void>;
+        // Register the SCM_RIGHTS landing pad for fd; FdInbox{} disables.
+        { b.set_fd_inbox(fd, FdInbox{}) } -> std::same_as<void>;
         // io_uring ring fd for MSG_RING cross-EM wakes (M8-05), -1 when the
         // backend has no ring.
         { b.wake_ring_fd() } -> std::same_as<int>;

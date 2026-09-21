@@ -23,7 +23,9 @@
 #include <thread>
 #include <vector>
 
+#ifdef __linux__
 #include <sys/epoll.h>
+#endif
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -77,6 +79,8 @@ struct Opts {
 // ---- raw epoll echo server (ADR-0002 tripwire baseline) --------------------
 // Minimal hand-written readiness loop: nonblocking accept, EPOLLIN read,
 // buffer, write-back. No framing knowledge — echoes bytes verbatim.
+// Linux-only by construction — the whole point is measuring epoll itself.
+#ifdef __linux__
 void raw_epoll_server(std::uint16_t port, std::atomic<bool>& stop) {
     // SOCK_NONBLOCK: the drain loop relies on accept4 returning EAGAIN.
     int lfd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -129,8 +133,8 @@ void raw_epoll_server(std::uint16_t port, std::atomic<bool>& stop) {
             // about syscall/count overhead, not write-path sophistication.
             ssize_t off = 0;
             while (off < r) {
-                ssize_t w = ::send(fd, buf.data() + off,
-                                   std::size_t(r - off), MSG_NOSIGNAL);
+                ssize_t w = ::send(fd, buf.data() + off, std::size_t(r - off),
+                                   MSG_NOSIGNAL);
                 if (w < 0) {
                     if (errno == EINTR) continue;
                     break;
@@ -142,6 +146,7 @@ void raw_epoll_server(std::uint16_t port, std::atomic<bool>& stop) {
     ::close(lfd);
     ::close(ep);
 }
+#endif  // __linux__
 
 // ---- framework echo server -------------------------------------------------
 // bench_echo_coro compiles this same file with AFX_ECHO_CORO_SERVER: the
@@ -162,16 +167,15 @@ void framework_server(EventManager& em, std::uint16_t port) {
                 for (auto& m : *batch) {
                     buf.resize(sizeof(EchoHeader) + m.body.size());
                     std::memcpy(buf.data(), &m.header, sizeof(EchoHeader));
-                    std::memcpy(buf.data() + sizeof(EchoHeader),
-                                m.body.data(), m.body.size());
+                    std::memcpy(buf.data() + sizeof(EchoHeader), m.body.data(),
+                                m.body.size());
                     if (co_await c.send(ByteSpan(buf.data(), buf.size())) ==
                         SendResult::Closed)
                         co_return;
                 }
             }
         });
-    if (!srv)
-        std::fprintf(stderr, "bench_echo: bind failed\n");
+    if (!srv) std::fprintf(stderr, "bench_echo: bind failed\n");
 }
 #else
 void framework_server(EventManager& em, std::uint16_t port) {
@@ -180,11 +184,10 @@ void framework_server(EventManager& em, std::uint16_t port) {
         auto* c = Connection<EchoProto, EventManager>::resolve(em, id);
         if (!c) return;
         for (auto& m : batch) {
-            ByteSpan parts[2]{ByteSpan(
-                                  reinterpret_cast<const std::byte*>(
-                                      &m.header),
-                                  sizeof(m.header)),
-                              m.body};
+            ByteSpan parts[2]{
+                ByteSpan(reinterpret_cast<const std::byte*>(&m.header),
+                         sizeof(m.header)),
+                m.body};
             (void)c->send_scatter(std::span<const ByteSpan>(parts, 2));
         }
     };
@@ -192,8 +195,7 @@ void framework_server(EventManager& em, std::uint16_t port) {
     cfg.bind = SockAddr::any(port);
     cfg.reuse_port = true;
     auto srv = em.make_server<EchoProto>(cfg, std::move(h));
-    if (!srv)
-        std::fprintf(stderr, "bench_echo: bind failed\n");
+    if (!srv) std::fprintf(stderr, "bench_echo: bind failed\n");
 }
 #endif  // AFX_ECHO_CORO_SERVER
 
@@ -286,11 +288,16 @@ void make_client(Shard& s, PerConn& pc, const Opts& o, Nanos interval) {
 
 const char* kind_name(BackendKind k) {
     switch (k) {
-        case BackendKind::Epoll: return "epoll";
-        case BackendKind::Uring: return "uring";
-        case BackendKind::Sim: return "sim";
-        case BackendKind::Kqueue: return "kqueue";
-        default: return "auto";
+        case BackendKind::Epoll:
+            return "epoll";
+        case BackendKind::Uring:
+            return "uring";
+        case BackendKind::Sim:
+            return "sim";
+        case BackendKind::Kqueue:
+            return "kqueue";
+        default:
+            return "auto";
     }
 }
 
@@ -330,21 +337,32 @@ Opts parse(int argc, char** argv) {
         if (a == "--server") {
             o.server = backend_of(val(), true);
             o.raw_server = (o.server == BackendKind::Kqueue);
-        } else if (a == "--load") o.load = backend_of(val(), false);
-        else if (a == "--conns") o.conns = std::atoi(val());
-        else if (a == "--duration") o.duration_s = std::atof(val());
-        else if (a == "--warmup") o.warmup_s = std::atof(val());
+        } else if (a == "--load")
+            o.load = backend_of(val(), false);
+        else if (a == "--conns")
+            o.conns = std::atoi(val());
+        else if (a == "--duration")
+            o.duration_s = std::atof(val());
+        else if (a == "--warmup")
+            o.warmup_s = std::atof(val());
         else if (a == "--mode") {
             std::string_view m = val();
             o.open_loop = (m == "open");
             if (!o.open_loop && m != "closed") usage(argv[0]);
-        } else if (a == "--rate") o.rate = std::atof(val());
-        else if (a == "--outstanding") o.outstanding = std::atoi(val());
-        else if (a == "--payload") o.payload = std::size_t(std::atol(val()));
-        else if (a == "--shards") o.shards = std::atoi(val());
-        else if (a == "--listen-port") o.port = std::uint16_t(std::atoi(val()));
-        else if (a == "--json") o.json = val();
-        else usage(argv[0]);
+        } else if (a == "--rate")
+            o.rate = std::atof(val());
+        else if (a == "--outstanding")
+            o.outstanding = std::atoi(val());
+        else if (a == "--payload")
+            o.payload = std::size_t(std::atol(val()));
+        else if (a == "--shards")
+            o.shards = std::atoi(val());
+        else if (a == "--listen-port")
+            o.port = std::uint16_t(std::atoi(val()));
+        else if (a == "--json")
+            o.json = val();
+        else
+            usage(argv[0]);
     }
     if (o.conns < 1 || o.shards < 1 || o.duration_s <= 0 || o.payload < 8 ||
         (o.open_loop && o.rate <= 0))
@@ -376,7 +394,12 @@ int main(int argc, char** argv) {
     std::thread srv_thread;
     std::unique_ptr<EventManager> srv_em;
     if (o.raw_server) {
+#ifdef __linux__
         srv_thread = std::thread([&] { raw_epoll_server(o.port, raw_stop); });
+#else
+        std::fprintf(stderr, "--server raw requires epoll (Linux-only)\n");
+        return 2;
+#endif
     } else {
         EventManagerConfig sc;
         sc.name = "echo-server";
@@ -396,8 +419,7 @@ int main(int argc, char** argv) {
         shards.push_back(std::make_unique<Shard>(std::move(cfg)));
     }
     Nanos interval(0);
-    if (o.open_loop)
-        interval = Nanos(std::int64_t(1e9 * o.conns / o.rate));
+    if (o.open_loop) interval = Nanos(std::int64_t(1e9 * o.conns / o.rate));
     int per_shard = (o.conns + o.shards - 1) / o.shards;
     int made = 0;
     for (auto& sp : shards) {
@@ -409,8 +431,7 @@ int main(int argc, char** argv) {
         for (auto& pc : sp->conns) make_client(*sp, pc, o, interval);
         made += n;
     }
-    std::uint64_t warmup_end =
-        realtime_ns() + std::uint64_t(o.warmup_s * 1e9);
+    std::uint64_t warmup_end = realtime_ns() + std::uint64_t(o.warmup_s * 1e9);
     for (auto& sp : shards) sp->warmup_end_rt = warmup_end;
 
     std::vector<std::thread> threads;
@@ -444,15 +465,15 @@ int main(int argc, char** argv) {
         srv_name, kind_name(o.load), o.conns, o.open_loop ? "open" : "closed",
         secs, (unsigned long long)replies, replies / secs,
         (unsigned long long)errors);
-    std::printf("latency ns: count=%llu min=%llu p50=%llu p90=%llu p99=%llu "
-                "p99.9=%llu max=%llu mean=%.0f\n",
-                (unsigned long long)lat.count(),
-                (unsigned long long)lat.min(),
-                (unsigned long long)lat.percentile(0.50),
-                (unsigned long long)lat.percentile(0.90),
-                (unsigned long long)lat.percentile(0.99),
-                (unsigned long long)lat.percentile(0.999),
-                (unsigned long long)lat.max(), lat.mean());
+    std::printf(
+        "latency ns: count=%llu min=%llu p50=%llu p90=%llu p99=%llu "
+        "p99.9=%llu max=%llu mean=%.0f\n",
+        (unsigned long long)lat.count(), (unsigned long long)lat.min(),
+        (unsigned long long)lat.percentile(0.50),
+        (unsigned long long)lat.percentile(0.90),
+        (unsigned long long)lat.percentile(0.99),
+        (unsigned long long)lat.percentile(0.999),
+        (unsigned long long)lat.max(), lat.mean());
 
     char head[1024];
     std::snprintf(head, sizeof(head),

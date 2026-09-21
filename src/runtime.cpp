@@ -3,8 +3,11 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#ifdef __linux__
 #include <sys/signalfd.h>
+#endif
 #include <unistd.h>
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -14,6 +17,23 @@
 #include "afx/sys/numa.hpp"
 
 namespace afx {
+
+#ifndef __linux__
+namespace {
+// macOS/BSD have no signalfd: the signal thread installs plain handlers that
+// write the signal number onto the self-pipe (async-signal-safe write only;
+// user callbacks still run on the dedicated thread, never in the handler).
+std::atomic<int> g_sig_pipe_w{-1};
+void sig_to_pipe(int sig) noexcept {
+    int w = g_sig_pipe_w.load(std::memory_order_relaxed);
+    if (w >= 0) {
+        char b = char(sig);
+        ssize_t ignored = ::write(w, &b, 1);
+        (void)ignored;
+    }
+}
+}  // namespace
+#endif
 
 Runtime::~Runtime() {
     shutdown(5s);
@@ -123,10 +143,21 @@ void Runtime::thread_main(Shard& s, int core) {
         CoreSet one;
         one.add(core);
         if (auto r = pin_this_thread(one); !r) {
-            s.start_error = r.error();
-            s.failed = true;
-            s.ready = true;  // publish so mailboxes() doesn't hang
-            return;
+            // Platforms without hard pinning (macOS/BSD) degrade to unpinned
+            // with a warning; a real pinning failure stays fatal.
+            if (r.error() ==
+                make_error(ErrorCategory::Config, Err::Unsupported)) {
+                std::fprintf(stderr,
+                             "afx: shard '%s' requested core %d but pinning "
+                             "is unsupported here — running unpinned\n",
+                             s.name.c_str(), core);
+                core = -1;
+            } else {
+                s.start_error = r.error();
+                s.failed = true;
+                s.ready = true;  // publish so mailboxes() doesn't hang
+                return;
+            }
         }
     }
     if (auto r = apply_sched_this_thread(s.cfg.sched); !r) {
@@ -145,7 +176,7 @@ void Runtime::thread_main(Shard& s, int core) {
     // names shard, core, NUMA node and wait strategy so a misplacement is
     // discoverable from stderr without attaching a profiler.
     int node = core >= 0 ? topo_.numa_node_of(core) : numa::current_node();
-    const char* wait = s.cfg.em.wait == WaitStrategy::Block       ? "block"
+    const char* wait = s.cfg.em.wait == WaitStrategy::Block ? "block"
                        : s.cfg.em.wait == WaitStrategy::SpinThenBlock
                            ? "spin-then-block"
                            : "spin";
@@ -178,11 +209,13 @@ void Runtime::thread_main(Shard& s, int core) {
     s.em.store(nullptr, std::memory_order_release);
 }
 
-// Signal handling on a designated thread via signalfd (§20).
+// Signal handling on a designated thread via signalfd on Linux, self-pipe +
+// handler elsewhere (§20).
 void Runtime::signal_thread_main() {
     sigset_t mask;
     sigemptyset(&mask);
     for (auto& [s, _] : signal_handlers_) sigaddset(&mask, s);
+#ifdef __linux__
     int sfd = ::signalfd(-1, &mask, SFD_CLOEXEC);
     if (sfd < 0) return;
 
@@ -199,6 +232,34 @@ void Runtime::signal_thread_main() {
         }
     }
     ::close(sfd);
+#else
+    // Publish the pipe, install byte-forwarding handlers, then unblock the
+    // mask — process-directed signals land on this thread only.
+    g_sig_pipe_w.store(signal_selfpipe_[1], std::memory_order_release);
+    struct sigaction sa {};
+    sa.sa_handler = &sig_to_pipe;
+    sigemptyset(&sa.sa_mask);
+    for (auto& [s, _] : signal_handlers_) ::sigaction(s, &sa, nullptr);
+    ::pthread_sigmask(SIG_UNBLOCK, &mask, nullptr);
+
+    bool stop = false;
+    while (!stop) {
+        pollfd pfd{signal_selfpipe_[0], POLLIN, 0};
+        if (::poll(&pfd, 1, -1) <= 0) continue;
+        char buf[64];
+        ssize_t r = ::read(signal_selfpipe_[0], buf, sizeof(buf));
+        if (r <= 0) break;
+        for (ssize_t i = 0; i < r && !stop; ++i) {
+            if (buf[i] == 0) {
+                stop = true;  // shutdown() sentinel
+                break;
+            }
+            for (auto& [sig, fn] : signal_handlers_)
+                if (int(buf[i]) == sig) fn();
+        }
+    }
+    g_sig_pipe_w.store(-1, std::memory_order_release);
+#endif
     ::close(signal_selfpipe_[0]);
     ::close(signal_selfpipe_[1]);
 }
@@ -215,15 +276,17 @@ void Runtime::shutdown(Duration timeout) {
     for (auto& s : shards_) {
         EventManager* e = s->em.load(std::memory_order_acquire);
         if (!e) continue;
-        if (e->is_running() &&
-            e->post([e, deadline] { e->begin_shutdown(deadline); }) ==
-                PostResult::Ok)
+        if (e->is_running() && e->post([e, deadline] {
+                e->begin_shutdown(deadline);
+            }) == PostResult::Ok)
             continue;
         e->stop();
     }
     signal_stop_.store(true, std::memory_order_release);
     if (signal_selfpipe_[1] >= 0) {
-        char b = 1;
+        // Byte 0 is the stop sentinel on the self-pipe signal path (no
+        // valid signo is 0); on Linux any byte suffices — revents is enough.
+        char b = 0;
         ssize_t ignored = ::write(signal_selfpipe_[1], &b, 1);
         (void)ignored;
     }

@@ -15,7 +15,11 @@
 
 // L1 backend
 #include "afx/backend/backend.hpp"
+#ifdef AFX_HAVE_KQUEUE
+#include "afx/backend/kqueue.hpp"
+#else
 #include "afx/backend/epoll.hpp"
+#endif
 #include "afx/backend/sim.hpp"
 #ifdef AFX_WITH_URING
 #include "afx/backend/uring.hpp"
@@ -41,11 +45,13 @@
 
 // L4 net
 #include "afx/net/connection.hpp"
+#include "afx/net/dns.hpp"
 #include "afx/net/protocol.hpp"
 #include "afx/net/sock_addr.hpp"
 #include "afx/net/socket.hpp"
 #include "afx/net/tcp_client.hpp"
 #include "afx/net/tcp_server.hpp"
+#include "afx/net/udp_socket.hpp"
 
 // L5 coroutines (opt-in layer — ADR-0005)
 #include "afx/coro/combine.hpp"

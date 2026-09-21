@@ -116,7 +116,11 @@ int SimBackend::add_fd() {
     // A real socket fd: TcpServer's accept path runs sock::apply/getpeername/
     // close on it, and detach()+::close() must succeed. It is never polled —
     // all I/O is intercepted at the submit layer.
+#ifdef SOCK_NONBLOCK
     int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+#else
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+#endif
     if (fd < 0) fd = next_fd_++;  // fd exhaustion: fall back to a virtual id
     fds_[fd];
     return fd;

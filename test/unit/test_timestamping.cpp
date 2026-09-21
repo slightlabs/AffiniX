@@ -22,6 +22,8 @@
 using namespace afx;
 using namespace std::chrono_literals;
 
+#ifdef SCM_TIMESTAMPING  // Linux-only cmsg type; parser is a no-op elsewhere
+
 TEST_CASE("timestamping: parse_rx_timestamping reads SCM_TIMESTAMPING") {
     alignas(cmsghdr) char cbuf[kTimestampingCbufSize]{};
     std::byte data[8]{};
@@ -37,9 +39,9 @@ TEST_CASE("timestamping: parse_rx_timestamping reads SCM_TIMESTAMPING") {
     c->cmsg_type = SCM_TIMESTAMPING;
     c->cmsg_len = CMSG_LEN(3 * sizeof(timespec));
     auto* ts = reinterpret_cast<timespec*>(CMSG_DATA(c));
-    ts[0] = timespec{10, 500};   // software
-    ts[1] = timespec{0, 0};      // legacy hw-transformed (ignored)
-    ts[2] = timespec{20, 750};   // raw hardware
+    ts[0] = timespec{10, 500};  // software
+    ts[1] = timespec{0, 0};     // legacy hw-transformed (ignored)
+    ts[2] = timespec{20, 750};  // raw hardware
 
     Timestamps stamps{};
     std::uint32_t flags = parse_rx_timestamping(msg, stamps);
@@ -48,6 +50,8 @@ TEST_CASE("timestamping: parse_rx_timestamping reads SCM_TIMESTAMPING") {
     CHECK(stamps.sw_ns == 10'000'000'500ull);
     CHECK(stamps.hw_ns == 20'000'000'750ull);
 }
+
+#endif  // SCM_TIMESTAMPING
 
 TEST_CASE("timestamping: empty control buffer yields no flags") {
     std::byte data[8]{};

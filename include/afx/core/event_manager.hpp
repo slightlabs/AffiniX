@@ -18,7 +18,11 @@
 #endif
 
 #include "afx/backend/backend.hpp"
+#ifdef AFX_HAVE_KQUEUE
+#include "afx/backend/kqueue.hpp"
+#else
 #include "afx/backend/epoll.hpp"
+#endif
 #ifdef AFX_WITH_URING
 #include "afx/backend/uring.hpp"
 #endif
@@ -42,10 +46,13 @@ namespace afx {
 // Net-layer forward declarations (factories are defined in net/*.hpp).
 struct ServerConfig;
 struct ClientConfig;
+struct UdpConfig;
 template <class P, class EM>
 class TcpServer;
 template <class P, class EM>
 class TcpClient;
+template <class P, class EM>
+class UdpSocket;
 
 enum class WaitStrategy : std::uint8_t {
     Block,          // sleep in the backend until an event or deadline
@@ -547,6 +554,10 @@ class BasicEventManager {
     void backend_set_timestamping(int fd, bool on) {
         backend_.set_timestamping(fd, on);
     }
+    // M11-06: register the SCM_RIGHTS landing pad for fd (Connection-owned).
+    void backend_set_fd_inbox(int fd, FdInbox in) {
+        backend_.set_fd_inbox(fd, in);
+    }
 
     // ---- hooks
     // ----------------------------------------------------------------
@@ -603,6 +614,8 @@ class BasicEventManager {
     template <class P, class Handlers>
     Result<TcpClient<P, BasicEventManager>*> make_client(ClientConfig,
                                                          Handlers&&);
+    template <class P, class Handlers>
+    Result<UdpSocket<P, BasicEventManager>*> make_udp(UdpConfig, Handlers&&);
     // M9: a server whose per-connection session is a coroutine —
     // `session(ConnRef<P,EM>) -> CoroTask<void>`, spawned at on_open.
     template <class P, class SessionFactory>
@@ -1115,13 +1128,22 @@ class BasicEventManager {
     }
 };
 
+// The platform's readiness backend (M11-07): kqueue on macOS/BSD, epoll on
+// Linux. The dedicated-resolver EM and any place needing a concrete
+// readiness backend (not AutoBackend's uring preference) should use this.
+#if defined(AFX_HAVE_KQUEUE)
+using DefaultPollBackend = KqueueBackend;
+#else
+using DefaultPollBackend = EpollBackend;
+#endif
+
 // The default production configuration: real clock + auto backend selection
-// (io_uring where available, epoll otherwise; §9.5). Tests instantiate
-// BasicEventManager<VirtualClock, SimBackend>.
+// (io_uring where available, epoll otherwise; §9.5; kqueue on macOS/BSD).
+// Tests instantiate BasicEventManager<VirtualClock, SimBackend>.
 #ifdef AFX_WITH_URING
 using EventManager = BasicEventManager<SteadyClock, AutoBackend>;
 #else
-using EventManager = BasicEventManager<SteadyClock, EpollBackend>;
+using EventManager = BasicEventManager<SteadyClock, DefaultPollBackend>;
 #endif
 
 }  // namespace afx

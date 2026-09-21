@@ -1,5 +1,6 @@
 #include "afx/sys/topology.hpp"
 
+#include <unistd.h>
 #include <algorithm>
 #include <charconv>
 #include <filesystem>
@@ -45,6 +46,22 @@ Topology Topology::detect(std::string_view sysfs_root) {
     fs::path cpu_root = t.sysfs_root_ + "/devices/system/cpu";
 
     std::error_code ec;
+    if (!fs::exists(cpu_root, ec)) {
+        // No sysfs (macOS/BSD, or an explicit nonexistent fixture root):
+        // synthesize one flat Core per online CPU — no NUMA/SMT info exists
+        // to parse, and tests only need count consistency.
+        long n = ::sysconf(_SC_NPROCESSORS_ONLN);
+        for (long i = 0; i < (n > 0 ? n : 1); ++i) {
+            Core c;
+            c.id = int(i);
+            c.package = 0;
+            c.physical = int(i);
+            c.smt_siblings = {int(i)};
+            c.numa = -1;
+            t.cores_.push_back(c);
+        }
+        return t;
+    }
     for (auto& e : fs::directory_iterator(cpu_root, ec)) {
         std::string name = e.path().filename().string();
         if (name.rfind("cpu", 0) != 0) continue;

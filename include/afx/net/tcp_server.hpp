@@ -4,6 +4,7 @@
 // EM, each with a different Protocol. With reuse_port every EM shard opens
 // its own listener on the same port and the kernel distributes accepts.
 
+#include <unistd.h>
 #include <memory>
 #include <unordered_map>
 
@@ -25,6 +26,9 @@ struct ServerConfig {
     Duration idle_read_timeout{};
     Duration idle_write_timeout{};
     std::size_t accepts_per_iteration = 32;
+    // M11-06: harvest SCM_RIGHTS descriptors on accepted unix conns
+    // (Handlers::on_fds). Meaningful only for AF_UNIX binds.
+    bool fd_passing = false;
 };
 
 template <class P, class EM>
@@ -54,10 +58,7 @@ class TcpServer {
             c->close(CloseReason::Shutdown);
             pool_.destroy(c);
         }
-        if (listen_fd_ >= 0) {
-            em_->backend_detach(listen_fd_);
-            ::close(listen_fd_);
-        }
+        stop_accepting();  // detach + close + unlink for AF_UNIX
         if (accept_sink_.valid()) em_->release_sink(accept_sink_);
     }
 
@@ -69,6 +70,12 @@ class TcpServer {
             cfg_.bind.family() ? cfg_.bind.family() : AF_INET, cfg_.sock);
         if (!fd) return fd.error();
         listen_fd_ = *fd;
+        // Unix listeners own their filesystem path: unlink a stale socket
+        // before bind (the usual EADDRINUSE trap), and again at close.
+        if (cfg_.bind.family() == AF_UNIX) {
+            std::string p(cfg_.bind.unix_path());
+            if (!p.empty()) ::unlink(p.c_str());
+        }
         if (auto r = sock::bind(listen_fd_, cfg_.bind, cfg_.reuse_addr,
                                 cfg_.reuse_port);
             !r)
@@ -96,9 +103,15 @@ class TcpServer {
     }
 
     // ---- §20 drain-sequence hooks (registered with the EM at open) ---------
-    static void hooks_begin(void* p) { static_cast<TcpServer*>(p)->stop_accepting(); }
-    static void hooks_notify(void* p) { static_cast<TcpServer*>(p)->notify_shutdown(); }
-    static bool hooks_drained(void* p) { return static_cast<TcpServer*>(p)->drained(); }
+    static void hooks_begin(void* p) {
+        static_cast<TcpServer*>(p)->stop_accepting();
+    }
+    static void hooks_notify(void* p) {
+        static_cast<TcpServer*>(p)->notify_shutdown();
+    }
+    static bool hooks_drained(void* p) {
+        return static_cast<TcpServer*>(p)->drained();
+    }
     static void hooks_shutdown_write(void* p) {
         static_cast<TcpServer*>(p)->half_close_all();
     }
@@ -109,6 +122,10 @@ class TcpServer {
         em_->backend_detach(listen_fd_);
         ::close(listen_fd_);
         listen_fd_ = -1;
+        if (bound_.family() == AF_UNIX) {
+            std::string p(bound_.unix_path());
+            if (!p.empty()) ::unlink(p.c_str());
+        }
     }
     void notify_shutdown() {
         if (!handlers_.on_shutdown) return;
@@ -165,10 +182,12 @@ class TcpServer {
         Peer peer{};
         if (auto p = sock::peer_addr(cfd); p) peer.addr = *p;
 
-        typename Conn::Params params{cfg_.flow, cfg_.idle_read_timeout,
+        typename Conn::Params params{cfg_.flow,
+                                     cfg_.idle_read_timeout,
                                      cfg_.idle_write_timeout,
                                      em_->config().memory.read_buffer_size,
-                                     cfg_.sock.timestamping};
+                                     cfg_.sock.timestamping,
+                                     cfg_.fd_passing};
         Conn* conn = pool_.construct(*em_, cfd, handlers_, params, this,
                                      &TcpServer::on_conn_gone);
         if (!conn) {

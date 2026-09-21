@@ -25,6 +25,14 @@ target_link_libraries(bench_echo_coro PRIVATE afx::afx)
 target_include_directories(bench_echo_coro PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(bench_echo_coro PRIVATE -Wall -Wextra)
 
+# M11-01: UDP batch-receive throughput — loopback flood between two
+# UdpSockets; --batch 1 vs 32 shows the recvmmsg drain factor. Networked
+# binary like bench_echo: built, never a ctest.
+add_executable(bench_udp_batch udp_batch.cpp)
+target_link_libraries(bench_udp_batch PRIVATE afx::afx)
+target_include_directories(bench_udp_batch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(bench_udp_batch PRIVATE -Wall -Wextra)
+
 foreach(bench_name IN ITEMS itc_pingpong channel_throughput timer_ops)
   add_executable(bench_${bench_name} ${bench_name}.cpp)
   target_link_libraries(bench_${bench_name}

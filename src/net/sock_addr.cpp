@@ -22,6 +22,24 @@ SockAddr SockAddr::loopback(std::uint16_t port) {
     return ipv4(htonl(INADDR_LOOPBACK), port);
 }
 
+Result<SockAddr> SockAddr::unix_domain(std::string_view path) {
+    sockaddr_un un{};
+    un.sun_family = AF_UNIX;
+    if (path.empty() || path.size() >= sizeof(un.sun_path))
+        return make_error(ErrorCategory::Net, Err::Invalid);
+    SockAddr a;
+    auto* out = reinterpret_cast<sockaddr_un*>(&a.ss_);
+    out->sun_family = AF_UNIX;
+    std::memcpy(out->sun_path, path.data(), path.size());
+    out->sun_path[path.size()] = '\0';
+    return a;
+}
+
+std::string_view SockAddr::unix_path() const noexcept {
+    if (ss_.ss_family != AF_UNIX) return {};
+    return reinterpret_cast<const sockaddr_un*>(&ss_)->sun_path;
+}
+
 Result<SockAddr> SockAddr::parse(std::string_view ip, std::uint16_t port) {
     std::string s(ip);
     sockaddr_in in4{};
@@ -61,6 +79,8 @@ std::string SockAddr::to_string() const {
         return std::string("[") + buf +
                "]:" + std::to_string(ntohs(in->sin6_port));
     }
+    if (ss_.ss_family == AF_UNIX)
+        return std::string("unix:") + std::string(unix_path());
     return "<unknown>";
 }
 

@@ -8,7 +8,6 @@
 
 #include <memory>
 
-#include "afx/backend/epoll.hpp"
 #include "afx/core/event_manager.hpp"
 #ifdef AFX_WITH_URING
 #include "afx/backend/uring.hpp"
@@ -16,21 +15,23 @@
 
 namespace afx::test {
 
-// Explicit epoll EM for parity runs: the canonical ::afx::EventManager is
-// auto-selecting, so parity must pin the concrete backends.
-using EpollEM = BasicEventManager<SteadyClock, EpollBackend>;
+// The platform readiness EM for parity runs: epoll on Linux, kqueue on
+// macOS/BSD (M11-07). The canonical ::afx::EventManager is auto-selecting,
+// so parity must pin the concrete backends.
+using PollEM = BasicEventManager<SteadyClock, DefaultPollBackend>;
+using EpollEM = PollEM;  // legacy name inside existing tests
 #ifdef AFX_WITH_URING
 using UringEM = BasicEventManager<SteadyClock, UringBackend>;
 #endif
 
-// Registers one doctest TEST_CASE_TEMPLATE per production backend. The type
-// list collapses to epoll alone when io_uring is not compiled in.
+// Registers one doctest TEST_CASE_TEMPLATE per production backend. On Linux
+// that's epoll + io_uring; on macOS/BSD it's kqueue alone.
 #ifdef AFX_WITH_URING
 #define AFX_BACKEND_TEST_CASE(name, T) \
-    TEST_CASE_TEMPLATE(name, T, ::afx::test::EpollEM, ::afx::test::UringEM)
+    TEST_CASE_TEMPLATE(name, T, ::afx::test::PollEM, ::afx::test::UringEM)
 #else
 #define AFX_BACKEND_TEST_CASE(name, T) \
-    TEST_CASE_TEMPLATE(name, T, ::afx::test::EpollEM)
+    TEST_CASE_TEMPLATE(name, T, ::afx::test::PollEM)
 #endif
 
 // Construct an EM of type T around `cfg` on the heap (EMs are not movable).

@@ -80,6 +80,9 @@ class UringBackend {
     // Mark an fd as SO_TIMESTAMPING-enabled: recvs switch to
     // IORING_OP_RECVMSG so RX stamps arrive as ancillary data (§9.4, M8-06).
     void set_timestamping(int fd, bool on);
+    // SCM_RIGHTS landing pad (M11-06): recvs switch to RECVMSG and
+    // descriptors are harvested into the inbox. FdInbox{} clears.
+    void set_fd_inbox(int fd, FdInbox in);
 
     int wait(std::span<Completion> out, Nanos timeout);
     void wake();  // thread-safe: eventfd write
@@ -91,11 +94,8 @@ class UringBackend {
     // only on this backend's owning thread: it stages a MSG_DATA send whose
     // completion CQE fires `target`'s eventfd wake_fn if the send itself
     // fails — a wake is never dropped.
-    int wake_ring_fd() const noexcept {
-        return msgring_ok_ ? ring_fd_ : -1;
-    }
-    bool msg_ring_wake(int target_fd,
-                       const std::weak_ptr<MailboxImpl>& target);
+    int wake_ring_fd() const noexcept { return msgring_ok_ ? ring_fd_ : -1; }
+    bool msg_ring_wake(int target_fd, const std::weak_ptr<MailboxImpl>& target);
     static bool msg_ring_supported();  // cached opcode probe (kernel ≥5.18)
     std::uint64_t msgring_sends() const noexcept { return msgring_sends_; }
     std::uint64_t msgring_fallbacks() const noexcept {
@@ -174,16 +174,19 @@ class UringBackend {
     std::unordered_map<std::uint64_t, MutByteSpan>
         recv_dst_;  // tag → caller buf
 
-    // SO_TIMESTAMPING recvmsg state (M8-06). The msghdr must outlive the
-    // in-flight op, so one persistent ctx per timestamping fd (a fd arms at
-    // most one recv at a time). unordered_map is node-based: ctx pointers
-    // stay valid across inserts.
+    // recvmsg state (M8-06 SO_TIMESTAMPING, M11-06 SCM_RIGHTS). The msghdr
+    // must outlive the in-flight op, so one persistent ctx per fd (a fd
+    // arms at most one recv at a time). unordered_map is node-based: ctx
+    // pointers stay valid across inserts. `ts_on`/`inbox.buf` mark which
+    // features the ctx serves; it exists while either is enabled.
     struct RecvmsgCtx {
         msghdr msg{};
         iovec iov{};
-        alignas(cmsghdr) char cbuf[64]{};  // kTimestampingCbufSize
+        alignas(cmsghdr) char cbuf[128]{};  // max(kTimestamping, kRights)
+        bool ts_on = false;
+        FdInbox inbox{};
     };
-    std::unordered_map<int, RecvmsgCtx> ts_ctx_;           // fd → ctx
+    std::unordered_map<int, RecvmsgCtx> ts_ctx_;                 // fd → ctx
     std::unordered_map<std::uint64_t, RecvmsgCtx*> ts_pending_;  // tag → ctx
 
     // MSG_RING send bookkeeping (M8-05): bounded table of in-flight wakes,
@@ -235,6 +238,8 @@ class AutoBackend {
     // Forwards to the selected backend; a no-op if it fell back to epoll
     // (timestamping still works — epoll parses cmsgs on its own flag).
     void set_timestamping(int fd, bool on);
+    // SCM_RIGHTS inbox (M11-06) — both backends support it natively.
+    void set_fd_inbox(int fd, FdInbox in);
 
     // M8-05: forwards wake_ring_fd; msg_ring_wake returns false when the
     // resolved backend is epoll (caller falls back to eventfd).

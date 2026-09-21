@@ -1,11 +1,19 @@
-#include "afx/backend/epoll.hpp"
+// KqueueBackend — emulated proactor over kqueue (M11-07). A faithful port of
+// EpollBackend's structure: submit_* arm EVFILT_READ/WRITE (EV_CLEAR for
+// edge semantics), the wait loop performs the syscalls on readiness and
+// synthesises Completions. Differences that matter:
+//   - wake() is an EVFILT_USER ident, not an eventfd;
+//   - accept() + fcntl stands in for accept4 (absent on macOS);
+//   - MSG_NOSIGNAL is 0 here — SO_NOSIGPIPE is set at socket create;
+//   - EV_EOF plays EPOLLRDHUP's role: drain pending bytes, then recv()==0.
+// Compiles to an empty TU outside AFX_HAVE_KQUEUE.
 
-// epoll/eventfd are Linux-only; on kqueue platforms this TU compiles empty
-// and KqueueBackend serves the readiness role (M11-07).
-#ifdef __linux__
+#include "afx/backend/kqueue.hpp"
 
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
+#ifdef AFX_HAVE_KQUEUE
+
+#include <fcntl.h>
+#include <sys/event.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cerrno>
@@ -14,94 +22,91 @@
 #include "afx/net/sock_addr.hpp"
 #include "afx/sys/ancillary.hpp"
 #include "afx/sys/clock.hpp"
-#include "afx/sys/timestamping.hpp"
+#include "afx/sys/compat.hpp"
 
 namespace afx {
 
+static_assert(IoBackend<KqueueBackend>);
+
 namespace {
 constexpr std::size_t kAcceptsPerWait = 32;
-// recvmsg control buffer: must fit the largest of SO_TIMESTAMPING stamps
-// and an SCM_RIGHTS batch (Connection caps at 8 fds).
+// recvmsg control buffer: sized for an SCM_RIGHTS batch (cap 8 fds).
 constexpr std::size_t kAncillaryCbufSize = CMSG_SPACE(8 * sizeof(int)) > 64
                                                ? CMSG_SPACE(8 * sizeof(int))
                                                : 64;
+// EVFILT_USER ident used for cross-thread wake — arbitrary constant.
+constexpr std::uintptr_t kWakeIdent = 0xAF11E;
 
-std::uint32_t to_epoll(Interest i) noexcept {
-    std::uint32_t e = 0;
-    if (has(i, Interest::Readable)) e |= EPOLLIN;
-    if (has(i, Interest::Writable)) e |= EPOLLOUT;
-    return e;
+// accept() + the flags accept4 would apply (macOS has no accept4).
+int accept_cloexec(int fd) {
+    int cfd = ::accept(fd, nullptr, nullptr);
+    if (cfd < 0) return cfd;
+    int fl = ::fcntl(cfd, F_GETFL, 0);
+    if (fl >= 0) ::fcntl(cfd, F_SETFL, fl | O_NONBLOCK);
+    ::fcntl(cfd, F_SETFD, FD_CLOEXEC);
+    return cfd;
 }
 }  // namespace
 
-EpollBackend::EpollBackend() {
-    epfd_ = ::epoll_create1(EPOLL_CLOEXEC);
-    wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (epfd_ >= 0 && wake_fd_ >= 0) {
-        epoll_event ev{};
-        ev.events = EPOLLIN;  // level-triggered: any pending wake counts once
-        ev.data.fd = wake_fd_;
-        ::epoll_ctl(epfd_, EPOLL_CTL_ADD, wake_fd_, &ev);
+KqueueBackend::KqueueBackend() {
+    kq_ = ::kqueue();
+    if (kq_ >= 0) {
+        kevent ev{};
+        EV_SET(&ev, kWakeIdent, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
+        ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
     }
 }
 
-EpollBackend::~EpollBackend() {
-    if (wake_fd_ >= 0) ::close(wake_fd_);
-    if (epfd_ >= 0) ::close(epfd_);
+KqueueBackend::~KqueueBackend() {
+    if (kq_ >= 0) ::close(kq_);
 }
 
 // ---------------------------------------------------------------------------
 
-Result<void> EpollBackend::attach(int fd, Interest i, UserData u) {
+Result<void> KqueueBackend::attach(int fd, Interest i, UserData u) {
     auto& s = fds_[fd];
     s.interest = i;
     s.watch_ud = u;
-    if (!s.registered) {
-        if (auto r = ensure_registered(s, fd); !r) return r;
-    }
-    update_events(fd, s);
+    update_filters(fd, s);
     return {};
 }
 
-Result<void> EpollBackend::modify(int fd, Interest i, UserData u) {
+Result<void> KqueueBackend::modify(int fd, Interest i, UserData u) {
     auto it = fds_.find(fd);
     if (it == fds_.end()) return make_error(ErrorCategory::Sys, Err::NotFound);
     it->second.interest = i;
     it->second.watch_ud = u;
-    update_events(fd, it->second);
+    update_filters(fd, it->second);
     return {};
 }
 
-Result<void> EpollBackend::detach(int fd) {
+Result<void> KqueueBackend::detach(int fd) {
     auto it = fds_.find(fd);
     if (it == fds_.end()) return {};
-    if (it->second.registered) ::epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr);
+    // Closing the fd removes its filters implicitly; drop the state.
     fds_.erase(it);
     return {};
 }
 
 // ---------------------------------------------------------------------------
 
-Result<void> EpollBackend::submit_recv(UserData u, int fd, MutByteSpan buf) {
+Result<void> KqueueBackend::submit_recv(UserData u, int fd, MutByteSpan buf) {
     auto& s = fds_[fd];
     if (s.recv_armed) return make_error(ErrorCategory::Internal, Err::Invalid);
     s.recv_armed = true;
     s.recv_ud = u;
     s.recv_buf = buf;
-    if (!s.registered) {
-        if (auto r = ensure_registered(s, fd); !r) return r;
-    }
-    update_events(fd, s);
+    update_filters(fd, s);
     return {};
 }
 
-Result<void> EpollBackend::submit_send(UserData u, int fd, ByteSpan data) {
+Result<void> KqueueBackend::submit_send(UserData u, int fd, ByteSpan data) {
     ByteSpan arr[1] = {data};
     return submit_sendv(u, fd, arr);
 }
 
-Result<void> EpollBackend::submit_sendv(UserData u, int fd,
-                                        std::span<const ByteSpan> iov) {
+Result<void> KqueueBackend::submit_sendv(UserData u, int fd,
+                                         std::span<const ByteSpan> iov) {
     auto& s = fds_[fd];
 
     std::size_t total = 0;
@@ -116,7 +121,7 @@ Result<void> EpollBackend::submit_sendv(UserData u, int fd,
             off += b.size();
         }
         s.sendq.push_back(std::move(req));
-        update_events(fd, s);
+        update_filters(fd, s);
         return {};
     }
 
@@ -143,7 +148,7 @@ Result<void> EpollBackend::submit_sendv(UserData u, int fd,
         queue_completion(u, std::int32_t(sent));
         return {};
     }
-    // Partial/EAGAIN: copy the tail and arm EPOLLOUT.
+    // Partial/EAGAIN: copy the tail and arm EVFILT_WRITE.
     SendReq req{u, std::vector<std::byte>(total - sent), 0};
     std::size_t wpos = 0, skip = sent;
     for (auto b : iov) {
@@ -157,26 +162,20 @@ Result<void> EpollBackend::submit_sendv(UserData u, int fd,
         skip = 0;
     }
     s.sendq.push_back(std::move(req));
-    if (!s.registered) {
-        if (auto r = ensure_registered(s, fd); !r) return r;
-    }
-    update_events(fd, s);
+    update_filters(fd, s);
     return {};
 }
 
-Result<void> EpollBackend::submit_accept(UserData u, int listen_fd) {
+Result<void> KqueueBackend::submit_accept(UserData u, int listen_fd) {
     auto& s = fds_[listen_fd];
     s.accept_armed = true;
     s.accept_ud = u;
-    if (!s.registered) {
-        if (auto r = ensure_registered(s, listen_fd); !r) return r;
-    }
-    update_events(listen_fd, s);
+    update_filters(listen_fd, s);
     return {};
 }
 
-Result<void> EpollBackend::submit_connect(UserData u, int fd,
-                                          const SockAddr& addr) {
+Result<void> KqueueBackend::submit_connect(UserData u, int fd,
+                                           const SockAddr& addr) {
     auto& s = fds_[fd];
     int r = ::connect(fd, addr.addr(), addr.len());
     if (r == 0) {
@@ -189,26 +188,23 @@ Result<void> EpollBackend::submit_connect(UserData u, int fd,
     }
     s.connect_pending = true;
     s.connect_ud = u;
-    if (!s.registered) {
-        if (auto rr = ensure_registered(s, fd); !rr) return rr;
-    }
-    update_events(fd, s);
+    update_filters(fd, s);
     return {};
 }
 
-void EpollBackend::set_timestamping(int fd, bool on) {
-    // May run before any submit_* (Connection::start calls it first): create
-    // the FdState entry rather than requiring prior registration.
-    fds_[fd].timestamping = on;
+void KqueueBackend::set_timestamping(int fd, bool on) {
+    // SO_TIMESTAMPING is a Linux facility; stored nowhere, delivered never.
+    (void)fd;
+    (void)on;
 }
 
-void EpollBackend::set_fd_inbox(int fd, FdInbox in) {
+void KqueueBackend::set_fd_inbox(int fd, FdInbox in) {
     fds_[fd].fd_inbox = in;
 }
 
-Result<void> EpollBackend::cancel(UserData u) {
-    bool found = false;
+Result<void> KqueueBackend::cancel(UserData u) {
     for (auto& [fd, s] : fds_) {
+        bool found = false;
         if (s.recv_armed && s.recv_ud == u) {
             s.recv_armed = false;
             queue_completion(u, -ECANCELED);
@@ -232,15 +228,14 @@ Result<void> EpollBackend::cancel(UserData u) {
             queue_completion(u, -ECANCELED);
             found = true;
         }
-        if (found) update_events(fd, s);
-        found = false;
+        if (found) update_filters(fd, s);
     }
     return {};
 }
 
 // ---------------------------------------------------------------------------
 
-int EpollBackend::wait(std::span<Completion> out, Nanos timeout) {
+int KqueueBackend::wait(std::span<Completion> out, Nanos timeout) {
     int n = 0;
     while (n < int(out.size()) && !ready_.empty()) {
         out[n++] = ready_.front();
@@ -250,81 +245,75 @@ int EpollBackend::wait(std::span<Completion> out, Nanos timeout) {
 
     // Any pending events left over from a previous saturated wait.
     while (n < int(out.size()) && !pending_events_.empty()) {
-        auto [fd, ev] = pending_events_.front();
+        kevent ev = pending_events_.front();
         pending_events_.pop_front();
-        auto it = fds_.find(fd);
+        auto it = fds_.find(int(ev.ident));
         if (it == fds_.end()) continue;
-        dispatch_event(fd, it->second, ev, out, n);
+        dispatch_event(int(ev.ident), it->second, ev, out, n);
     }
     if (n == int(out.size())) return n;
 
-    epoll_event evs[64];
+    kevent evs[64];
+    timespec ts{timeout.count() / 1'000'000'000,
+                timeout.count() % 1'000'000'000};
+    // Completions already queued (or a zero timeout) → poll, don't block.
+    if (!ready_.empty() || n > 0 || timeout <= Nanos::zero()) ts = {0, 0};
     int r;
-    if (!ready_.empty() || n > 0 || timeout <= Nanos::zero()) {
-        timespec ts{0, 0};
-        do {
-            r = ::epoll_pwait2(epfd_, evs, 64, &ts, nullptr);
-        } while (r < 0 && errno == EINTR);
-    } else {
-        timespec ts{timeout.count() / 1'000'000'000,
-                    timeout.count() % 1'000'000'000};
-        do {
-            r = ::epoll_pwait2(epfd_, evs, 64, &ts, nullptr);
-        } while (r < 0 && errno == EINTR);
-    }
+    do {
+        r = ::kevent(kq_, nullptr, 0, evs, 64, &ts);
+    } while (r < 0 && errno == EINTR);
     if (r < 0) return n;
 
     for (int i = 0; i < r; ++i) {
-        int fd = evs[i].data.fd;
-        std::uint32_t ev = evs[i].events;
-        if (fd == wake_fd_) {
-            std::uint64_t v;
-            while (::read(wake_fd_, &v, sizeof(v)) == sizeof(v)) {}
-            continue;
-        }
+        const kevent& ev = evs[i];
+        if (ev.filter == EVFILT_USER && ev.ident == kWakeIdent)
+            continue;  // wake marker — EV_CLEAR already consumed it
+        int fd = int(ev.ident);
         auto it = fds_.find(fd);
         if (it == fds_.end()) continue;
         if (n < int(out.size()))
             dispatch_event(fd, it->second, ev, out, n);
         else
-            pending_events_.emplace_back(fd, ev);
+            pending_events_.push_back(ev);
     }
     return n;
 }
 
-void EpollBackend::wake() {
-    std::uint64_t one = 1;
-    if (::write(wake_fd_, &one, sizeof(one)) <
-        0) { /* full: a wake is already pending */
-    }
+void KqueueBackend::wake() {
+    kevent ev{};
+    EV_SET(&ev, kWakeIdent, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
+    ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
 }
 
 // ---------------------------------------------------------------------------
 // internals
 // ---------------------------------------------------------------------------
 
-Result<void> EpollBackend::ensure_registered(FdState& s, int fd) {
-    epoll_event ev{};
-    ev.events = EPOLLET | EPOLLRDHUP;
-    ev.data.fd = fd;
-    if (::epoll_ctl(epfd_, EPOLL_CTL_ADD, fd, &ev) < 0) return last_errno();
-    s.registered = true;
-    return {};
+void KqueueBackend::update_filters(int fd, FdState& s) {
+    bool rd =
+        s.recv_armed || s.accept_armed || has(s.interest, Interest::Readable);
+    bool wr = !s.sendq.empty() || s.connect_pending ||
+              has(s.interest, Interest::Writable);
+    // Track armed state so we never EV_DELETE a filter that was never added
+    // (harmless ENOENT, but a wasted syscall either way).
+    if (rd != s.rd_armed) {
+        kevent ev{};
+        EV_SET(&ev, fd, EVFILT_READ, rd ? (EV_ADD | EV_CLEAR) : EV_DELETE, 0, 0,
+               nullptr);
+        ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+        s.rd_armed = rd;
+    }
+    if (wr != s.wr_armed) {
+        kevent ev{};
+        EV_SET(&ev, fd, EVFILT_WRITE, wr ? (EV_ADD | EV_CLEAR) : EV_DELETE, 0,
+               0, nullptr);
+        ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+        s.wr_armed = wr;
+    }
 }
 
-void EpollBackend::update_events(int fd, FdState& s) {
-    if (!s.registered) return;
-    std::uint32_t ev = EPOLLET | EPOLLRDHUP | to_epoll(s.interest);
-    if (s.recv_armed || s.accept_armed) ev |= EPOLLIN;
-    if (!s.sendq.empty() || s.connect_pending) ev |= EPOLLOUT;
-    epoll_event e{};
-    e.events = ev;
-    e.data.fd = fd;
-    ::epoll_ctl(epfd_, EPOLL_CTL_MOD, fd, &e);
-}
-
-void EpollBackend::queue_completion(UserData u, std::int32_t res,
-                                    std::uint32_t flags) {
+void KqueueBackend::queue_completion(UserData u, std::int32_t res,
+                                     std::uint32_t flags) {
     Completion c{};
     c.user = u;
     c.result = res;
@@ -333,8 +322,8 @@ void EpollBackend::queue_completion(UserData u, std::int32_t res,
     ready_.push_back(c);
 }
 
-void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
-                               int& n) {
+void KqueueBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
+                                int& n) {
     // Watch interest takes readiness completions.
     if (has(s.interest, Interest::Readable)) {
         if (n < int(out.size())) {
@@ -343,14 +332,16 @@ void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
             c.result = CompletionFlag::ReadyRead;
             c.stamps.tsc = rdtsc();
             out[n++] = c;
-        } else
-            pending_events_.emplace_back(fd, EPOLLIN);
+        } else {
+            kevent ev{};
+            EV_SET(&ev, fd, EVFILT_READ, 0, 0, 0, nullptr);
+            pending_events_.push_back(ev);
+        }
     }
 
     if (s.accept_armed) {
         for (std::size_t i = 0; i < kAcceptsPerWait; ++i) {
-            int cfd =
-                ::accept4(fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            int cfd = accept_cloexec(fd);
             if (cfd < 0) break;
             if (n < int(out.size())) {
                 Completion c{};
@@ -359,9 +350,10 @@ void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
                 c.stamps.tsc = rdtsc();
                 out[n++] = c;
             } else {
-                // Completion capacity exhausted: stash fd for next wait.
-                pending_events_.emplace_back(fd, EPOLLIN);
                 ::close(cfd);  // cannot queue it; drop
+                kevent ev{};
+                EV_SET(&ev, fd, EVFILT_READ, 0, 0, 0, nullptr);
+                pending_events_.push_back(ev);
                 break;
             }
         }
@@ -373,15 +365,9 @@ void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
     // Emulated proactor: drain until EAGAIN or buffer full, one completion.
     std::size_t total = 0;
     std::int32_t result = 0;
-    Timestamps stamps{};
-    std::uint32_t ts_flags = 0;
     std::uint32_t n_fds = 0;  // SCM_RIGHTS harvested across this drain
     bool fds_trunc = false;
-    const bool want_msg = s.fd_inbox.buf != nullptr
-#ifdef AFX_WITH_TIMESTAMPING
-                          || s.timestamping
-#endif
-        ;
+    const bool want_msg = s.fd_inbox.buf != nullptr;
     for (;;) {
         MutByteSpan rem = s.recv_buf.subspan(total);
         if (rem.empty()) {
@@ -390,8 +376,6 @@ void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
         }
         ssize_t r;
         if (want_msg) {
-            // recvmsg carries SO_TIMESTAMPING RX stamps and/or SCM_RIGHTS
-            // descriptors; the control buffer must fit both uses.
             alignas(cmsghdr) char cbuf[kAncillaryCbufSize];
             iovec iov{rem.data(), rem.size()};
             msghdr msg{};
@@ -400,15 +384,9 @@ void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
             msg.msg_control = cbuf;
             msg.msg_controllen = sizeof(cbuf);
             r = ::recvmsg(fd, &msg, MSG_NOSIGNAL);
-            if (r > 0) {
-#ifdef AFX_WITH_TIMESTAMPING
-                if (s.timestamping)
-                    ts_flags |= parse_rx_timestamping(msg, stamps);
-#endif
-                if (s.fd_inbox.buf)
-                    fds_trunc |= sys::collect_rights(msg, s.fd_inbox.buf,
-                                                     s.fd_inbox.cap, n_fds);
-            }
+            if (r > 0)
+                fds_trunc |= sys::collect_rights(msg, s.fd_inbox.buf,
+                                                 s.fd_inbox.cap, n_fds);
         } else {
             r = ::recv(fd, rem.data(), rem.size(), MSG_NOSIGNAL);
         }
@@ -432,42 +410,46 @@ void EpollBackend::on_readable(int fd, FdState& s, std::span<Completion>& out,
 
     if (result == -EAGAIN && n_fds == 0) return;  // nothing to report yet
     s.recv_armed = false;
-    update_events(fd, s);
+    update_filters(fd, s);
     if (s.fd_inbox.count) *s.fd_inbox.count = n_fds;
-    if (n_fds) ts_flags |= CompletionFlag::HasFds;
-    if (fds_trunc) ts_flags |= CompletionFlag::FdTrunc;
+    std::uint32_t flags = 0;
+    if (n_fds) flags |= CompletionFlag::HasFds;
+    if (fds_trunc) flags |= CompletionFlag::FdTrunc;
     if (n < int(out.size())) {
         Completion c{};
         c.user = s.recv_ud;
         c.result = result;
-        c.flags = ts_flags;
+        c.flags = flags;
         c.stamps.tsc = rdtsc();
-        c.stamps.hw_ns = stamps.hw_ns;
-        c.stamps.sw_ns = stamps.sw_ns;
         out[n++] = c;
     } else {
-        pending_events_.emplace_back(fd, EPOLLIN);
+        kevent ev{};
+        EV_SET(&ev, fd, EVFILT_READ, 0, 0, 0, nullptr);
+        pending_events_.push_back(ev);
         s.recv_armed = true;  // re-arm so the event is not lost
-        update_events(fd, s);
+        update_filters(fd, s);
     }
 }
 
-void EpollBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
-                               int& n) {
+void KqueueBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
+                                int& n) {
     if (s.connect_pending) {
         s.connect_pending = false;
         int err = 0;
         socklen_t l = sizeof(err);
         ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &l);
-        update_events(fd, s);
+        update_filters(fd, s);
         if (n < int(out.size())) {
             Completion c{};
             c.user = s.connect_ud;
             c.result = err ? -err : 0;
             c.stamps.tsc = rdtsc();
             out[n++] = c;
-        } else
-            pending_events_.emplace_back(fd, EPOLLOUT);
+        } else {
+            kevent ev{};
+            EV_SET(&ev, fd, EVFILT_WRITE, 0, 0, 0, nullptr);
+            pending_events_.push_back(ev);
+        }
     }
 
     while (!s.sendq.empty()) {
@@ -482,11 +464,14 @@ void EpollBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
             c.result = -errno;
             c.stamps.tsc = rdtsc();
             s.sendq.pop_front();
-            update_events(fd, s);
-            if (n < int(out.size()))
+            update_filters(fd, s);
+            if (n < int(out.size())) {
                 out[n++] = c;
-            else
-                pending_events_.emplace_back(fd, EPOLLOUT);
+            } else {
+                kevent ev{};
+                EV_SET(&ev, fd, EVFILT_WRITE, 0, 0, 0, nullptr);
+                pending_events_.push_back(ev);
+            }
             continue;
         }
         req.off += std::size_t(w);
@@ -496,11 +481,14 @@ void EpollBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
             c.result = std::int32_t(req.bytes.size());
             c.stamps.tsc = rdtsc();
             s.sendq.pop_front();
-            update_events(fd, s);
-            if (n < int(out.size()))
+            update_filters(fd, s);
+            if (n < int(out.size())) {
                 out[n++] = c;
-            else
-                pending_events_.emplace_back(fd, EPOLLOUT);
+            } else {
+                kevent ev{};
+                EV_SET(&ev, fd, EVFILT_WRITE, 0, 0, 0, nullptr);
+                pending_events_.push_back(ev);
+            }
         }
     }
 
@@ -511,30 +499,39 @@ void EpollBackend::on_writable(int fd, FdState& s, std::span<Completion>& out,
             c.result = CompletionFlag::ReadyWrite;
             c.stamps.tsc = rdtsc();
             out[n++] = c;
-        } else
-            pending_events_.emplace_back(fd, EPOLLOUT);
+        } else {
+            kevent ev{};
+            EV_SET(&ev, fd, EVFILT_WRITE, 0, 0, 0, nullptr);
+            pending_events_.push_back(ev);
+        }
     }
 }
 
-void EpollBackend::on_errorish(int fd, FdState& s, std::uint32_t ev,
-                               std::span<Completion>& out, int& n) {
-    // Surface errors through whichever op is armed.
+void KqueueBackend::on_errorish(int fd, FdState& s, const kevent& ev,
+                                std::span<Completion>& out, int& n) {
+    // Surface errors through whichever op is armed. EV_EOF on a read filter
+    // with a live recv means peer closed: the drain itself returns 0, so
+    // this path only needs to cover the cases where nothing is armed.
+    if (s.recv_armed && ev.filter == EVFILT_READ && !(ev.flags & EV_ERROR))
+        return;  // EV_EOF — let the read drain produce its 0
     if (s.recv_armed) {
         s.recv_armed = false;
-        int err = 0;
-        socklen_t l = sizeof(err);
-        ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &l);
-        update_events(fd, s);
+        int err = int(ev.data) ? int(ev.data) : 0;
+        if (ev.flags & EV_ERROR) {
+            socklen_t l = sizeof(err);
+            ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &l);
+        }
+        update_filters(fd, s);
         if (n < int(out.size())) {
             Completion c{};
             c.user = s.recv_ud;
-            c.result = err ? -err : 0;  // 0 == EOF on HUP/RDHUP
+            c.result = err ? -err : 0;  // 0 == EOF
             c.stamps.tsc = rdtsc();
             out[n++] = c;
         } else {
-            pending_events_.emplace_back(fd, ev);
+            pending_events_.push_back(ev);
             s.recv_armed = true;
-            update_events(fd, s);
+            update_filters(fd, s);
         }
         return;
     }
@@ -542,24 +539,23 @@ void EpollBackend::on_errorish(int fd, FdState& s, std::uint32_t ev,
         if (n < int(out.size())) {
             Completion c{};
             c.user = s.watch_ud;
-            c.result =
-                ((ev & EPOLLERR) ? CompletionFlag::ReadyErr : 0) |
-                ((ev & (EPOLLHUP | EPOLLRDHUP)) ? CompletionFlag::ReadyHangup
-                                                : 0);
+            c.result = ((ev.flags & EV_ERROR) ? CompletionFlag::ReadyErr : 0) |
+                       ((ev.flags & EV_EOF) ? CompletionFlag::ReadyHangup : 0);
             c.stamps.tsc = rdtsc();
             out[n++] = c;
-        } else
-            pending_events_.emplace_back(fd, ev);
+        } else {
+            pending_events_.push_back(ev);
+        }
     }
 }
 
-void EpollBackend::dispatch_event(int fd, FdState& s, std::uint32_t ev,
-                                  std::span<Completion>& out, int& n) {
-    if (ev & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) on_errorish(fd, s, ev, out, n);
-    if (ev & EPOLLIN) on_readable(fd, s, out, n);
-    if (ev & EPOLLOUT) on_writable(fd, s, out, n);
+void KqueueBackend::dispatch_event(int fd, FdState& s, const kevent& ev,
+                                   std::span<Completion>& out, int& n) {
+    if (ev.flags & (EV_ERROR | EV_EOF)) on_errorish(fd, s, ev, out, n);
+    if (ev.filter == EVFILT_READ) on_readable(fd, s, out, n);
+    if (ev.filter == EVFILT_WRITE) on_writable(fd, s, out, n);
 }
 
 }  // namespace afx
 
-#endif  // __linux__
+#endif  // AFX_HAVE_KQUEUE

@@ -13,7 +13,10 @@ namespace afx::numa {
 
 namespace {
 
-// Raw syscall wrappers — no libnuma (M1-11).
+// Raw syscall wrappers — no libnuma (M1-11). Linux-only: get_mempolicy/mbind
+// have no macOS/BSD counterpart, so the NUMA query/control surface degrades
+// to "unavailable" there while alloc() still serves plain mappings.
+#ifdef __linux__
 int sys_getcpu(unsigned* cpu, unsigned* node) noexcept {
     return int(::syscall(SYS_getcpu, cpu, node, nullptr));
 }
@@ -31,11 +34,11 @@ long sys_get_mempolicy(int* mode, unsigned long* nodemask,
 constexpr int kMpolBind = 2;
 constexpr int kMpolInterleave = 3;
 constexpr unsigned kMpolMfStrict = 1;
+#endif  // __linux__
 
 std::size_t page_size() noexcept {
-    static const std::size_t ps =
-        std::size_t(::sysconf(_SC_PAGESIZE) > 0 ? ::sysconf(_SC_PAGESIZE)
-                                              : 4096);
+    static const std::size_t ps = std::size_t(
+        ::sysconf(_SC_PAGESIZE) > 0 ? ::sysconf(_SC_PAGESIZE) : 4096);
     return ps;
 }
 
@@ -49,14 +52,19 @@ void prefault(void* p, std::size_t n, std::size_t page) noexcept {
 }  // namespace
 
 bool available() noexcept {
+#ifdef __linux__
     unsigned long mask[16] = {};
     int mode = 0;
     errno = 0;
     long r = sys_get_mempolicy(&mode, mask, 8 * sizeof(mask), nullptr, 0);
     return r == 0 || errno != ENOSYS;
+#else
+    return false;
+#endif
 }
 
 int node_count() noexcept {
+#ifdef __linux__
     // maxnode of a legal no-op call reports the kernel's node ceiling.
     unsigned long mask[16] = {};
     int mode = 0;
@@ -68,22 +76,35 @@ int node_count() noexcept {
     int n = 0;
     for (unsigned long w : mask) n += __builtin_popcountl(w);
     return n > 0 ? n : 1;
+#else
+    return 1;
+#endif
 }
 
 int current_node() noexcept {
+#ifdef __linux__
     unsigned cpu = 0, node = 0;
     if (sys_getcpu(&cpu, &node) != 0) return -1;
     return int(node);
+#else
+    return -1;
+#endif
 }
 
 Result<void> bind_to_node(void* p, std::size_t n, int node) noexcept {
     if (node < 0) return {};
+#ifdef __linux__
     unsigned long mask[16] = {};
-    if (std::size_t(node) < 8 * sizeof(mask)) mask[node / 64] |= 1ul << (node % 64);
-    if (sys_mbind(p, n, kMpolBind, mask, 8 * sizeof(mask),
-                  kMpolMfStrict) != 0)
+    if (std::size_t(node) < 8 * sizeof(mask))
+        mask[node / 64] |= 1ul << (node % 64);
+    if (sys_mbind(p, n, kMpolBind, mask, 8 * sizeof(mask), kMpolMfStrict) != 0)
         return last_errno();
     return {};
+#else
+    (void)p;
+    (void)n;
+    return make_error(ErrorCategory::Config, Err::Unsupported);
+#endif
 }
 
 Region::~Region() {
@@ -120,10 +141,10 @@ Result<Region> alloc(std::size_t bytes, const AllocOpts& o) {
         // 2 MiB pages: needs a configured hugepage pool; failure is expected
         // on unconfigured hosts and falls through to the THP hint.
         std::size_t hsz = (bytes + (2u << 20) - 1) / (2u << 20) * (2u << 20);
-        void* h = ::mmap(nullptr, hsz, PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB |
-                             (21 << MAP_HUGE_SHIFT),
-                         -1, 0);
+        void* h = ::mmap(
+            nullptr, hsz, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | (21 << MAP_HUGE_SHIFT),
+            -1, 0);
         if (h != MAP_FAILED) {
             p = h;
             bytes = hsz;

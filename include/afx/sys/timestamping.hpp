@@ -17,19 +17,17 @@ namespace afx {
 // return the CompletionFlag bits earned (HasSwStamp / HasHwStamp). Safe to
 // call on any recvmsg result — finds nothing when timestamping is off.
 inline std::uint32_t parse_rx_timestamping(msghdr& msg,
-                                         Timestamps& stamps) noexcept {
+                                           Timestamps& stamps) noexcept {
     std::uint32_t flags = 0;
+#ifdef SCM_TIMESTAMPING  // Linux-only cmsg type; absent on macOS/BSD
     for (cmsghdr* c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
         if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_TIMESTAMPING)
             continue;
-        const auto* ts =
-            reinterpret_cast<const timespec*>(CMSG_DATA(c));
-        std::uint64_t sw =
-            std::uint64_t(ts[0].tv_sec) * 1'000'000'000ull +
-            std::uint64_t(ts[0].tv_nsec);
-        std::uint64_t hw =
-            std::uint64_t(ts[2].tv_sec) * 1'000'000'000ull +
-            std::uint64_t(ts[2].tv_nsec);
+        const auto* ts = reinterpret_cast<const timespec*>(CMSG_DATA(c));
+        std::uint64_t sw = std::uint64_t(ts[0].tv_sec) * 1'000'000'000ull +
+                           std::uint64_t(ts[0].tv_nsec);
+        std::uint64_t hw = std::uint64_t(ts[2].tv_sec) * 1'000'000'000ull +
+                           std::uint64_t(ts[2].tv_nsec);
         if (sw) {
             stamps.sw_ns = sw;
             flags |= CompletionFlag::HasSwStamp;
@@ -39,6 +37,10 @@ inline std::uint32_t parse_rx_timestamping(msghdr& msg,
             flags |= CompletionFlag::HasHwStamp;
         }
     }
+#else
+    (void)msg;
+    (void)stamps;
+#endif
     return flags;
 }
 

@@ -52,6 +52,7 @@ enum class Err : std::uint16_t {
     NoResources,
     PermissionDenied,
     Unsupported,
+    Truncated,  // datagram ended mid-frame (UDP partial-message tail)
 };
 
 constexpr Error make_error(ErrorCategory c, std::uint16_t code) noexcept {

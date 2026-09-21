@@ -55,6 +55,14 @@ Result<void> set_nonblocking(int fd);
 Result<SockAddr> local_addr(int fd);
 Result<SockAddr> peer_addr(int fd);
 
+// sendmsg with an SCM_RIGHTS cmsg carrying `fds` alongside `payload`
+// (M11-06). The rights attach to exactly this send's bytes, so callers must
+// guarantee stream ordering (empty write queue). Returns bytes of payload
+// written; a short write still delivered the rights — they ride the first
+// byte — so the caller queues the remainder as plain bytes.
+Result<std::size_t> send_fds(int fd, ByteSpan payload,
+                             std::span<const int> fds);
+
 }  // namespace sock
 
 }  // namespace afx

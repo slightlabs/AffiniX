@@ -658,3 +658,23 @@ Recorded here rather than silently applied, per §2, agreement 3.
    window drawn uniformly from `partition_window` — an explicit probability
    is what a seeded sweep needs. `net().partition(link, window)` remains a
    direct test hook. §22.3's example is updated.
+6. **`SockAddr::unix_domain()`, not `::unix()`** (M11-05). GCC predefines
+   `unix` as a macro expanding to `1`; the factory name had to move. Abstract
+   namespace paths (leading NUL) are also deliberately not translated — the
+   filesystem path is what `SockAddr` stores and what gets unlinked.
+7. **macOS/BSD signal handling is a self-pipe, not `EVFILT_SIGNAL`** (M11-08).
+   The signal thread is a dedicated `std::thread`, not an EM, so there is no
+   kqueue to register a signal filter on. `sigaction` handlers write the
+   signal number to the existing shutdown self-pipe; user callbacks still
+   run on the dedicated thread. DESIGN.md §20 updated.
+8. **`DefaultPollBackend` is the platform readiness backend; `AutoBackend`
+   is Linux-only** (M11-07). On macOS/BSD `EventManager` is
+   `BasicEventManager<SteadyClock, KqueueBackend>` directly — there is no
+   io_uring to auto-select against, so the alias collapses rather than
+   probes. `EventManagerConfig::backend` remains but is ignored by fixed
+   backends, same as `SimBackend` already did.
+9. **`pin_this_thread` returns `Err::Unsupported` on macOS/BSD, which
+   `Runtime` degrades to unpinned-with-a-warning** (M11-08). Requested
+   placement stays fatal on Linux; on platforms with no hard pinning the
+   honest outcome is a loud degradation, not a dead shard — and not silent
+   affinity-tag "pinning" that isn't binding.

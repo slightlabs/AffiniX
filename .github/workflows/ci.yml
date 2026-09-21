@@ -45,6 +45,26 @@ jobs:
         env:
           AFX_MODEL_SCALE: "0.3"
 
+  # M11-08: kqueue backend + portability gate. The tree compiles epoll/io_uring
+  # to empty TUs here; DefaultPollBackend = KqueueBackend exercises the same
+  # AFX_BACKEND_TEST_CASE parity suite (collapses to kqueue alone).
+  macos:
+    name: macos (kqueue)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: brew install ninja
+      - name: Configure
+        run: cmake --preset clang-debug
+      - name: Build
+        run: cmake --build --preset clang-debug -j"$(sysctl -n hw.ncpu)"
+      - name: Test
+        run: ctest --preset clang-debug --output-on-failure \
+               -j"$(sysctl -n hw.ncpu)" --timeout 300
+        env:
+          AFX_MODEL_SCALE: "0.3"
+
   sanitizers:
     name: ${{ matrix.preset }}
     runs-on: ubuntu-24.04

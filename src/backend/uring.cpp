@@ -14,6 +14,7 @@
 
 #include "afx/itc/mailbox.hpp"
 #include "afx/net/sock_addr.hpp"
+#include "afx/sys/ancillary.hpp"
 #include "afx/sys/clock.hpp"
 #include "afx/sys/timestamping.hpp"
 
@@ -251,8 +252,7 @@ int UringBackend::init(const UringConfig& cfg) noexcept {
         sq_mask_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.ring_mask);
         sq_entries_ =
             reinterpret_cast<std::uint32_t*>(base + p.sq_off.ring_entries);
-        sq_flags_ =
-            reinterpret_cast<std::uint32_t*>(base + p.sq_off.flags);
+        sq_flags_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.flags);
         sq_array_ = reinterpret_cast<std::uint32_t*>(base + p.sq_off.array);
         sqes_ = static_cast<io_uring_sqe*>(sqes_map_);
     }
@@ -414,8 +414,7 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
             } else if (std::uint32_t(cqe.user_data) == kMsgRingDoneSub) {
                 // Our MSG_RING send completed. On failure the wake never
                 // reached the target — fire its eventfd thunk instead.
-                std::size_t slot =
-                    (cqe.user_data >> 32) & (kMsgringSlots - 1);
+                std::size_t slot = (cqe.user_data >> 32) & (kMsgringSlots - 1);
                 MsgringSlot& fb = msgring_fb_[slot];
                 if (cqe.res < 0) {
                     ++msgring_fallbacks_;
@@ -454,9 +453,19 @@ int UringBackend::drain_cq(std::span<Completion> out) noexcept {
             case std::uint8_t(OpKind::Recv): {
                 if (auto tit = ts_pending_.find(cqe.user_data);
                     tit != ts_pending_.end()) {
-                    if (cqe.res > 0)
-                        c.flags |= parse_rx_timestamping(tit->second->msg,
-                                                       c.stamps);
+                    if (cqe.res > 0) {
+                        RecvmsgCtx& ctx = *tit->second;
+                        if (ctx.ts_on)
+                            c.flags |= parse_rx_timestamping(ctx.msg, c.stamps);
+                        if (ctx.inbox.buf) {
+                            std::uint32_t nfds = 0;
+                            bool trunc = sys::collect_rights(
+                                ctx.msg, ctx.inbox.buf, ctx.inbox.cap, nfds);
+                            if (ctx.inbox.count) *ctx.inbox.count = nfds;
+                            if (nfds) c.flags |= CompletionFlag::HasFds;
+                            if (trunc) c.flags |= CompletionFlag::FdTrunc;
+                        }
+                    }
                     ts_pending_.erase(tit);
                 }
                 auto it = recv_dst_.find(cqe.user_data);
@@ -590,11 +599,26 @@ Result<void> UringBackend::detach(int fd) {
 }
 
 void UringBackend::set_timestamping(int fd, bool on) {
-    if (!on) {
+    auto& ctx = ts_ctx_[fd];  // persistent: kernel reads msg at op execution
+    ctx.ts_on = on;
+    if (!on && ctx.inbox.buf == nullptr) {
         ts_ctx_.erase(fd);
         return;
     }
-    auto& ctx = ts_ctx_[fd];  // persistent: kernel reads msg at op execution
+    ctx.msg = msghdr{};
+    ctx.msg.msg_iov = &ctx.iov;
+    ctx.msg.msg_iovlen = 1;
+    ctx.msg.msg_control = ctx.cbuf;
+    ctx.msg.msg_controllen = sizeof(ctx.cbuf);
+}
+
+void UringBackend::set_fd_inbox(int fd, FdInbox in) {
+    auto& ctx = ts_ctx_[fd];
+    ctx.inbox = in;
+    if (!in.buf && !ctx.ts_on) {
+        ts_ctx_.erase(fd);
+        return;
+    }
     ctx.msg = msghdr{};
     ctx.msg.msg_iov = &ctx.iov;
     ctx.msg.msg_iovlen = 1;
@@ -812,8 +836,8 @@ bool UringBackend::msg_ring_supported() {
     return ok;
 }
 
-bool UringBackend::msg_ring_wake(
-    int target_fd, const std::weak_ptr<MailboxImpl>& target) {
+bool UringBackend::msg_ring_wake(int target_fd,
+                                 const std::weak_ptr<MailboxImpl>& target) {
     if (!msgring_ok_ || target_fd < 0) return false;
     std::size_t slot = msgring_head_++ & (kMsgringSlots - 1);
     if (msgring_fb_[slot].target.use_count() != 0)
@@ -831,9 +855,8 @@ bool UringBackend::msg_ring_wake(
     s->addr = IORING_MSG_DATA;
     s->off = kMsgRingWakeTag;
     s->len = 0;
-    s->user_data = UserData::make(kInternalKind, std::uint32_t(slot),
-                                  kMsgRingDoneSub)
-                       .raw;
+    s->user_data =
+        UserData::make(kInternalKind, std::uint32_t(slot), kMsgRingDoneSub).raw;
     ++msgring_sends_;
     return true;  // staged; rides this thread's next submission
 }
@@ -912,6 +935,10 @@ Result<void> AutoBackend::cancel(UserData u) {
 }
 void AutoBackend::set_timestamping(int fd, bool on) {
     std::visit([&](auto& b) { b.set_timestamping(fd, on); }, impl_);
+}
+
+void AutoBackend::set_fd_inbox(int fd, FdInbox in) {
+    std::visit([&](auto& b) { b.set_fd_inbox(fd, in); }, impl_);
 }
 int AutoBackend::wake_ring_fd() const noexcept {
     return std::visit([](const auto& b) { return b.wake_ring_fd(); }, impl_);

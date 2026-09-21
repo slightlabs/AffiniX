@@ -34,7 +34,7 @@ enum class CloseReason : std::uint8_t {
     WriteOverflow,  // write queue exceeded policy
     Error,          // socket error
     ConnectFailed,
-    Shutdown,  // EM/runtime teardown
+    Shutdown,      // EM/runtime teardown
     HeldOverflow,  // coroutine session stopped consuming (held cap hit)
 };
 
@@ -50,6 +50,10 @@ struct Handlers {
     // §20 stage 2: invoked once per connection when shutdown begins, before
     // the drain wait — the app's chance to flush a final response.
     InlineFn<void(ConnId), 48> on_shutdown;
+    // M11-06 SCM_RIGHTS: descriptors received on a unix conn. The handler
+    // takes ownership of every fd in the span; without a handler the conn
+    // closes them itself (unclaimed rights would leak).
+    InlineFn<void(ConnId, std::span<const int>), 48> on_fds;
     P proto{};  // protocol instance (stateful framers allowed)
 };
 
@@ -68,6 +72,9 @@ class Connection {
         Duration idle_write_timeout{};
         std::size_t read_buffer_size = 64u << 10;
         bool timestamping = false;  // SO_TIMESTAMPING RX stamps (§9.4)
+        // M11-06: recvmsg control plane for SCM_RIGHTS (unix conns; the
+        // foundation for hot restart fd hand-off).
+        bool fd_passing = false;
     };
 
     // notify(owner, ConnId, CloseReason) is invoked via em.defer() once the
@@ -126,6 +133,9 @@ class Connection {
         peer_ = peer;
         state_ = ConnState::Established;
         if (params_.timestamping) em_->backend_set_timestamping(fd_, true);
+        if (params_.fd_passing)
+            em_->backend_set_fd_inbox(
+                fd_, FdInbox{fd_inbox_, kFdInboxCap, &fd_inbox_n_});
         if (handlers_->on_open) handlers_->on_open(id_, peer_);
         arm_idle_timer();
         rearm_recv();
@@ -167,6 +177,28 @@ class Connection {
         if (state_ != ConnState::Established) return;
         state_ = ConnState::ShutdownWrite;
         if (fd_ >= 0) ::shutdown(fd_, SHUT_WR);
+    }
+
+    // Send descriptors via SCM_RIGHTS (M11-06, unix conns). The rights
+    // attach to exactly this sendmsg's bytes, so the byte stream must be
+    // quiescent — a queued/in-flight write would let plain bytes overtake
+    // the cmsg. Requires an empty write queue and ≤8 fds; a short write
+    // already delivered the rights (they ride the first byte), so the
+    // remainder is queued as plain bytes to preserve ordering.
+    [[nodiscard]] Result<void> send_fds(ByteSpan payload,
+                                        std::span<const int> fds) {
+        if (state_ != ConnState::Established)
+            return make_error(ErrorCategory::Net, Err::Closed);
+        if (write_inflight_ || !write_buf_.empty())
+            return make_error(ErrorCategory::Net, Err::WouldBlock);
+        auto r = sock::send_fds(fd_, payload, fds);
+        if (!r) return r.error();
+        em_->stats().bytes_out += std::uint64_t(*r);
+        if (*r < payload.size()) {
+            // Rights delivered with the first byte; queue the tail normally.
+            (void)send(payload.subspan(*r));
+        }
+        return {};
     }
 
     void close(CloseReason r = CloseReason::LocalClose) {
@@ -314,6 +346,8 @@ class Connection {
         em_->stats().bytes_in += std::uint64_t(c.result);
         em_->recorder().record(EventKind::Recv, id_.idx,
                                std::uint32_t(c.result));
+        if (c.flags & (CompletionFlag::HasFds | CompletionFlag::FdTrunc))
+            deliver_fds(c.flags);
         arm_idle_timer();
 
         // Framer inlined into the read loop (§14); batches capped by the
@@ -344,6 +378,25 @@ class Connection {
         if (!batch_.empty()) dispatch_batch();
         // Coroutine sessions pace reads via recv(); callback mode re-arms.
         if (state_ == ConnState::Established && !coro_.on) arm_recv();
+    }
+
+    // SCM_RIGHTS delivery (M11-06): the backend harvested descriptors into
+    // fd_inbox_ during the drain; hand them to on_fds (ownership passes to
+    // the handler) or close them ourselves — unclaimed rights would leak.
+    void deliver_fds(std::uint32_t flags) {
+        if (flags & CompletionFlag::FdTrunc) {
+            ++em_->stats().frame_errors;
+            if (handlers_->on_error)
+                handlers_->on_error(
+                    id_, make_error(ErrorCategory::Net, Err::Truncated));
+        }
+        std::span<const int> fds(fd_inbox_, fd_inbox_n_);
+        if (handlers_->on_fds) {
+            handlers_->on_fds(id_, fds);
+        } else {
+            for (int f : fds) ::close(f);
+        }
+        fd_inbox_n_ = 0;
     }
 
     void dispatch_batch() {
@@ -619,6 +672,10 @@ class Connection {
     TimerGroup group_{};
     TimerId idle_timer_{};
     std::vector<Message> batch_;
+    // SCM_RIGHTS inbox (M11-06): backend fills, deliver_fds drains.
+    static constexpr std::uint32_t kFdInboxCap = 8;
+    int fd_inbox_[kFdInboxCap]{};
+    std::uint32_t fd_inbox_n_ = 0;
     void* owner_;
     void (*notify_)(void*, ConnId, CloseReason);
     static inline char type_tag_{};  // one per <P, EM> instantiation
